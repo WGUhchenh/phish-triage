@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>URLScan Phishing Triage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+:root {
+  --bg:#080b10; --surface:#0d1320; --border:#1a2540; --border2:#243050;
+  --text:#c8d8f0; --muted:#4a6080; --accent:#00d4ff;
+  --low:#00e676; --medium:#ffd740; --high:#ff6d00; --critical:#ff1744;
+  --pending:#7c8cff; --vt:#a78bfa;
+  --font-mono:'JetBrains Mono',monospace; --font-head:'Syne',sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font-mono);font-size:13px;line-height:1.6;min-height:100vh}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+.header{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+.logo{display:flex;align-items:center;gap:12px}
+.logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),#005577);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.logo-text{font-family:var(--font-head);font-size:18px;font-weight:700;color:#fff;letter-spacing:-.3px}
+.logo-sub{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:2px}
+.header-stats{display:flex;gap:24px}
+.stat{text-align:right}
+.stat-value{font-size:18px;font-weight:600;color:#fff;line-height:1}
+.stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+.app{display:flex;height:calc(100vh - 61px)}
+.sidebar{width:200px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);padding:20px 0}
+.nav-section{padding:16px 20px 6px;font-size:9px;text-transform:uppercase;letter-spacing:2px;color:var(--muted);opacity:.6}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:var(--muted);transition:all .15s;border-left:2px solid transparent;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:1px}
+.nav-item:hover{color:var(--text);background:rgba(255,255,255,.03)}
+.nav-item.active{color:var(--accent);border-left-color:var(--accent);background:rgba(0,212,255,.05)}
+.nav-item.active-vt{color:var(--vt);border-left-color:var(--vt);background:rgba(167,139,250,.05)}
+.nav-badge{margin-left:auto;border-radius:10px;padding:1px 6px;font-size:9px;font-weight:700}
+.main{flex:1;overflow-y:auto;padding:28px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px;margin-bottom:20px}
+.card-title{font-family:var(--font-head);font-size:14px;font-weight:700;color:#fff;margin-bottom:4px}
+.card-sub{font-size:11px;color:var(--muted);margin-bottom:20px}
+.field{margin-bottom:16px}
+.label{display:block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:6px}
+input[type="text"],textarea,select{width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;padding:10px 14px;color:var(--text);font-family:var(--font-mono);font-size:13px;transition:border-color .15s;outline:none;resize:vertical}
+input:focus,textarea:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(0,212,255,.1)}
+textarea{min-height:120px}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:6px;border:none;cursor:pointer;font-family:var(--font-mono);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1px;transition:all .15s}
+.btn-primary{background:var(--accent);color:#000}
+.btn-primary:hover{background:#00eeff;transform:translateY(-1px)}
+.btn-primary:disabled{opacity:.4;cursor:not-allowed;transform:none}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border2)}
+.btn-ghost:hover{color:var(--text)}
+.btn-ghost:disabled{opacity:.4;cursor:not-allowed}
+.btn-save{background:rgba(0,230,118,.1);color:var(--low);border:1px solid rgba(0,230,118,.2)}
+.btn-save:hover{background:rgba(0,230,118,.2)}
+.btn-save:disabled{opacity:.4;cursor:not-allowed}
+.btn-vt{background:rgba(167,139,250,.12);color:var(--vt);border:1px solid rgba(167,139,250,.25);font-size:11px;padding:6px 14px}
+.btn-vt:hover{background:rgba(167,139,250,.22)}
+.btn-vt:disabled{opacity:.4;cursor:not-allowed}
+.toggle-group{display:flex;gap:6px}
+.toggle-btn{flex:1;padding:8px;background:var(--bg);border:1px solid var(--border2);border-radius:6px;cursor:pointer;color:var(--muted);font-family:var(--font-mono);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;transition:all .15s;text-align:center}
+.toggle-btn.active{background:rgba(0,212,255,.1);border-color:var(--accent);color:var(--accent)}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:10px 14px;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{color:var(--accent)}
+th.sorted{color:var(--accent)}
+td{padding:12px 14px;border-bottom:1px solid rgba(26,37,64,.5);vertical-align:middle;font-size:12px}
+tr:hover td{background:rgba(255,255,255,.02)}
+.url-cell{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;white-space:nowrap}
+.badge-dot{width:5px;height:5px;border-radius:50%}
+.badge-critical,.badge-malicious{background:rgba(255,23,68,.15);color:var(--critical);box-shadow:0 0 8px rgba(255,23,68,.2)}
+.badge-critical .badge-dot,.badge-malicious .badge-dot{background:var(--critical);box-shadow:0 0 4px var(--critical)}
+.badge-high,.badge-suspicious{background:rgba(255,109,0,.15);color:var(--high)}
+.badge-high .badge-dot,.badge-suspicious .badge-dot{background:var(--high)}
+.badge-medium{background:rgba(255,215,64,.15);color:var(--medium)}
+.badge-medium .badge-dot{background:var(--medium)}
+.badge-low,.badge-safe{background:rgba(0,230,118,.12);color:var(--low)}
+.badge-low .badge-dot,.badge-safe .badge-dot{background:var(--low)}
+.badge-pending{background:rgba(124,140,255,.12);color:var(--pending)}
+.badge-pending .badge-dot{background:var(--pending);animation:pulse 1.5s infinite}
+.badge-unknown{background:rgba(74,96,128,.2);color:var(--muted)}
+.badge-unknown .badge-dot{background:var(--muted)}
+/* VT-specific badges */
+.vt-hit-none{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:rgba(0,230,118,.1);color:var(--low);white-space:nowrap}
+.vt-hit-low{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:rgba(255,215,64,.12);color:var(--medium);white-space:nowrap}
+.vt-hit-high{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:rgba(255,23,68,.15);color:var(--critical);white-space:nowrap}
+.vt-hit-none{background:rgba(0,230,118,.1);color:var(--low)}
+.vt-none{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:10px;background:rgba(74,96,128,.15);color:var(--muted);white-space:nowrap}
+/* VT panel */
+.vt-panel{background:rgba(167,139,250,.04);border:1px solid rgba(167,139,250,.15);border-radius:8px;padding:16px 18px;margin-top:12px}
+.vt-panel-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--vt);margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.vt-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px}
+.vt-row-label{width:72px;flex-shrink:0;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:1px}
+.vt-meta{font-size:10px;color:var(--muted);margin-left:4px}
+/* Expandable row */
+.expand-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:10px;font-family:var(--font-mono);padding:2px 6px;border-radius:4px;transition:color .15s}
+.expand-btn:hover{color:var(--vt)}
+.expanded-row td{padding-top:0;padding-bottom:16px}
+.score-bar-wrap{display:flex;align-items:center;gap:8px}
+.score-bar{width:60px;height:4px;background:var(--border);border-radius:2px;overflow:hidden}
+.score-fill{height:100%;border-radius:2px;transition:width .3s}
+.score-num{font-size:11px;color:var(--muted);min-width:28px}
+.alert{padding:12px 16px;border-radius:6px;font-size:12px;margin-bottom:16px;display:flex;align-items:flex-start;gap:10px;word-break:break-word}
+.alert-success{background:rgba(0,230,118,.1);border:1px solid rgba(0,230,118,.2);color:var(--low)}
+.alert-error{background:rgba(255,23,68,.1);border:1px solid rgba(255,23,68,.2);color:var(--critical)}
+.alert-info{background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.15);color:var(--accent)}
+.alert-vt{background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.2);color:var(--vt)}
+.search-result{border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:8px;transition:border-color .15s}
+.search-result:hover{border-color:var(--border2)}
+.search-result-url{color:var(--accent);font-size:13px;word-break:break-all;text-decoration:none}
+.search-result-url:hover{text-decoration:underline}
+.search-result-meta{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--muted)}
+.sort-chip{padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--font-mono);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;background:var(--bg);border:1px solid var(--border2);color:var(--muted);transition:all .15s}
+.sort-chip.active{background:rgba(0,212,255,.1);border-color:var(--accent);color:var(--accent)}
+.sort-chip:hover{color:var(--text)}
+.alert-sanitized{background:rgba(255,215,64,.08);border:1px solid rgba(255,215,64,.2);color:var(--medium)}
+.san-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:10px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;background:rgba(255,215,64,.12);color:var(--medium);white-space:nowrap;cursor:default}
+.san-detail{font-size:10px;color:var(--muted);margin-top:6px;word-break:break-all;line-height:1.7}
+.san-detail code{color:var(--medium);background:rgba(255,215,64,.08);padding:1px 5px;border-radius:3px;font-family:var(--font-mono)}
+.empty-icon{font-size:40px;margin-bottom:12px}
+.empty-text{font-size:12px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.metric-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px}
+.metric-val{font-family:var(--font-head);font-size:32px;font-weight:800;color:#fff;line-height:1}
+.metric-label{font-size:11px;color:var(--muted);margin-top:6px}
+.hint-chip{display:inline-block;padding:4px 10px;border-radius:4px;background:var(--bg);border:1px solid var(--border2);color:var(--muted);font-size:11px;cursor:pointer;margin:3px;transition:all .15s}
+.hint-chip:hover{color:var(--accent);border-color:var(--accent)}
+.bulk-item{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:6px;margin-bottom:6px;background:rgba(255,255,255,.02);font-size:11px}
+.spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.1);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;display:inline-block}
+.spinner-vt{border-top-color:var(--vt)}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.fade-in{animation:fadeIn .25s ease}
+/* VT lookup result card */
+.vt-result-section{border:1px solid rgba(167,139,250,.15);border-radius:8px;padding:16px;margin-bottom:12px;background:rgba(167,139,250,.03)}
+.vt-result-section h4{font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--vt);margin-bottom:12px;font-weight:700}
+.vt-detail-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(26,37,64,.4);font-size:11px}
+.vt-detail-row:last-child{border-bottom:none}
+.vt-detail-key{color:var(--muted)}
+.vt-detail-val{color:var(--text);font-weight:500;text-align:right;max-width:200px;word-break:break-all}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+const api = async (path, opts={}) => {
+  const r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  if (!r.ok) {
+    const e = await r.json().catch(()=>({detail:r.statusText}));
+    throw new Error(e.detail || r.statusText);
+  }
+  return r.json();
+};
+
+const labelToVerdict = l => ({malicious:'critical',suspicious:'high',safe:'low'}[l] || l || 'unknown');
+const scoreToVerdict = s => s>=60?'critical':s>=30?'high':s>0?'low':'unknown';
+
+const VerdictBadge = ({label, score}) => {
+  const v = label ? labelToVerdict(label) : scoreToVerdict(score||0);
+  const text = {critical:'Critical',high:'High',medium:'Medium',low:'Low',safe:'Safe',unknown:'Unknown',pending:'Scanning'}[v]||v;
+  return <span className={`badge badge-${v}`}><span className="badge-dot"/>{text}{score>0&&<span style={{marginLeft:4,opacity:.7}}>{score}</span>}</span>;
+};
+
+const ScoreBar = ({score}) => {
+  const s = score||0;
+  const color = s>=60?'var(--critical)':s>=30?'var(--high)':'var(--low)';
+  return <div className="score-bar-wrap"><div className="score-bar"><div className="score-fill" style={{width:`${s}%`,background:color}}/></div><span className="score-num">{s}</span></div>;
+};
+
+/* ── VT Badge ── */
+const VTBadge = ({malicious, total}) => {
+  if (malicious == null || total == null) {
+    return <span className="vt-none">— no data</span>;
+  }
+  if (malicious === 0) {
+    return <span className="vt-hit-none">✓ 0/{total}</span>;
+  }
+  if (malicious <= 2) {
+    return <span className="vt-hit-low">⚠ {malicious}/{total}</span>;
+  }
+  return <span className="vt-hit-high">✕ {malicious}/{total}</span>;
+};
+
+/* ── VT Inline Panel (shown in expanded row) ── */
+const VTPanel = ({scan, onEnriched}) => {
+  const [enriching, setEnriching] = useState(false);
+  const [enrichMsg, setEnrichMsg] = useState(null);
+
+  const hasData = scan.vt_domain_total != null || scan.vt_ip_total != null;
+
+  const handleEnrich = async () => {
+    setEnriching(true); setEnrichMsg(null);
+    try {
+      const d = await api(`/api/vt/enrich/${scan.uuid}`, {method:'POST'});
+      setEnrichMsg({type:'success', text:`VT enrichment complete — score updated to ${d.verdict_score}`});
+      if (onEnriched) onEnriched();
+    } catch(e) {
+      setEnrichMsg({type:'error', text: e.message});
+    }
+    setEnriching(false);
+  };
+
+  return (
+    <div className="vt-panel">
+      <div className="vt-panel-title">
+        <span>🦠</span> VirusTotal Intelligence
+        {!hasData && <span style={{color:'var(--muted)',fontWeight:400,fontSize:9,marginLeft:6}}>— not yet enriched</span>}
+      </div>
+
+      <div className="vt-row">
+        <span className="vt-row-label">Domain</span>
+        <VTBadge malicious={scan.vt_domain_malicious} total={scan.vt_domain_total}/>
+        {scan.page_domain && <span className="vt-meta">{scan.page_domain}</span>}
+      </div>
+
+      <div className="vt-row">
+        <span className="vt-row-label">IP</span>
+        <VTBadge malicious={scan.vt_ip_malicious} total={scan.vt_ip_total}/>
+        {scan.page_ip && <span className="vt-meta">{scan.page_ip}</span>}
+      </div>
+
+      <div className="vt-row">
+        <span className="vt-row-label">URL</span>
+        <VTBadge malicious={scan.vt_url_malicious} total={scan.vt_url_total}/>
+      </div>
+
+      {enrichMsg && (
+        <div className={`alert alert-${enrichMsg.type}`} style={{marginTop:10,marginBottom:4,padding:'8px 12px',fontSize:11}}>
+          {enrichMsg.type==='success'?'✓':'✕'} {enrichMsg.text}
+        </div>
+      )}
+
+      <button className="btn btn-vt" style={{marginTop:10}} onClick={handleEnrich} disabled={enriching}>
+        {enriching ? <><span className="spinner spinner-vt" style={{width:12,height:12}}/> Enriching…</> : '🔄 Re-run VT Enrichment'}
+      </button>
+    </div>
+  );
+};
+
+const timeAgo = iso => {
+  if (!iso) return '—';
+  const d = Math.floor((Date.now()-new Date(iso))/1000);
+  if (d<60) return `${d}s ago`;
+  if (d<3600) return `${Math.floor(d/60)}m ago`;
+  return `${Math.floor(d/3600)}h ago`;
+};
+const trunc = (s,n) => s&&s.length>n?s.slice(0,n)+'…':(s||'—');
+
+/* ── Submit ── */
+const SubmitTab = ({onSubmitted}) => {
+  const [url,setUrl]=useState('');
+  const [vis,setVis]=useState('public');
+  const [loading,setLoading]=useState(false);
+  const [msg,setMsg]=useState(null);
+  const [sanInfo,setSanInfo]=useState(null);
+
+  const submit = async () => {
+    if (!url.trim()) return;
+    setLoading(true); setMsg(null); setSanInfo(null);
+    try {
+      const d = await api('/api/scan',{method:'POST',body:JSON.stringify({url:url.trim(),visibility:vis})});
+      setMsg({type:'success',text:`Submitted! UUID: ${d.uuid} — check Queue tab in ~30s`});
+      if (d.sanitized) setSanInfo(d);
+      setUrl(''); onSubmitted();
+    } catch(e) { setMsg({type:'error',text:e.message}); }
+    setLoading(false);
+  };
+
+  return (
+    <div className="fade-in">
+      <div className="card">
+        <div className="card-title">Submit URL for Scanning</div>
+        <div className="card-sub">Submit a single URL to urlscan.io — results will appear in the Queue tab</div>
+        {msg&&<div className={`alert alert-${msg.type}`}>{msg.type==='success'?'✓':'✕'} {msg.text}</div>}
+        {sanInfo&&(
+          <div className="alert alert-sanitized fade-in">
+            <div><strong>🧹 Tracking params stripped before scan</strong>
+              {sanInfo.sanitization_details?.method==='hybrid'&&
+                <span style={{fontSize:10,marginLeft:8,opacity:.7}}>(AI-assisted)</span>}
+            </div>
+            <div className="san-detail">
+              <strong>Stripped:</strong> {sanInfo.sanitization_details?.stripped?.map(k=><code key={k}>{k}</code>)}
+              {sanInfo.sanitization_details?.kept?.length>0&&<><br/><strong>Kept:</strong> {sanInfo.sanitization_details.kept.map(k=><code key={k}>{k}</code>)}</>}
+              <br/><strong>Scanned as:</strong> <code style={{color:'var(--accent)'}}>{sanInfo.url}</code>
+            </div>
+          </div>
+        )}
+        <div className="field">
+          <label className="label">Target URL</label>
+          <input type="text" placeholder="https://suspicious-site.example.com" value={url}
+            onChange={e=>setUrl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&submit()}/>
+        </div>
+        <div className="field">
+          <label className="label">Visibility</label>
+          <div className="toggle-group" style={{maxWidth:300}}>
+            {['public','unlisted','private'].map(v=>(
+              <button key={v} className={`toggle-btn${vis===v?' active':''}`} onClick={()=>setVis(v)}>{v}</button>
+            ))}
+          </div>
+        </div>
+        <button className="btn btn-primary" onClick={submit} disabled={loading||!url.trim()}>
+          {loading?<><span className="spinner"/> Submitting…</>:'⬆ Submit URL'}
+        </button>
+      </div>
+
+      <div className="card" style={{borderColor:'rgba(0,212,255,.1)'}}>
+        <div className="card-title">Verdict Scoring Guide</div>
+        <div className="card-sub">How automated risk scores are calculated — urlscan.io + VirusTotal signals combined</div>
+
+        <div style={{fontSize:11,color:'var(--muted)',marginBottom:8,textTransform:'uppercase',letterSpacing:1}}>urlscan.io signals</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
+          {[
+            {label:'urlscan malicious flag',pts:'+60',color:'var(--critical)'},
+            {label:'Engine detections (×10)',pts:'up to +30',color:'var(--high)'},
+            {label:'Domain redirect detected',pts:'+10',color:'var(--medium)'},
+            {label:'urlscan base score factor',pts:'up to +40',color:'var(--medium)'},
+            {label:'No HTTPS on final page',pts:'+5',color:'var(--medium)'},
+          ].map(r=>(
+            <div key={r.label} style={{display:'flex',justifyContent:'space-between',padding:'8px 12px',background:'var(--bg)',borderRadius:6,border:'1px solid var(--border)'}}>
+              <span style={{color:'var(--muted)',fontSize:11}}>{r.label}</span>
+              <span style={{color:r.color,fontWeight:700,fontSize:12}}>{r.pts}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={{fontSize:11,color:'var(--vt)',marginBottom:8,textTransform:'uppercase',letterSpacing:1}}>VirusTotal signals</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:18}}>
+          {[
+            {label:'VT domain flagged (3+ engines)',pts:'+20',color:'var(--critical)'},
+            {label:'VT domain flagged (1–2 engines)',pts:'+10',color:'var(--high)'},
+            {label:'VT IP flagged (3+ engines)',pts:'+20',color:'var(--critical)'},
+            {label:'VT IP flagged (1–2 engines)',pts:'+10',color:'var(--high)'},
+            {label:'VT URL flagged (any engine)',pts:'+15',color:'var(--high)'},
+          ].map(r=>(
+            <div key={r.label} style={{display:'flex',justifyContent:'space-between',padding:'8px 12px',background:'rgba(167,139,250,.04)',borderRadius:6,border:'1px solid rgba(167,139,250,.12)'}}>
+              <span style={{color:'var(--muted)',fontSize:11}}>{r.label}</span>
+              <span style={{color:r.color,fontWeight:700,fontSize:12}}>{r.pts}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+          <VerdictBadge label="malicious"/><span style={{color:'var(--muted)',fontSize:11}}>≥ 60</span>
+          <VerdictBadge label="suspicious"/><span style={{color:'var(--muted)',fontSize:11}}>30–59</span>
+          <VerdictBadge label="safe"/><span style={{color:'var(--muted)',fontSize:11}}>&lt; 30</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ── Bulk ── */
+const BulkTab = ({onSubmitted}) => {
+  const [urls,setUrls]=useState('');
+  const [vis,setVis]=useState('public');
+  const [loading,setLoading]=useState(false);
+  const [results,setResults]=useState(null);
+
+  const submit = async () => {
+    const list = urls.split('\n').map(u=>u.trim()).filter(Boolean);
+    if (!list.length) return;
+    setLoading(true); setResults(null);
+    try {
+      const d = await api('/api/scan/bulk',{method:'POST',body:JSON.stringify({urls:list,visibility:vis})});
+      setResults(d); onSubmitted();
+    } catch(e) { setResults({error:e.message}); }
+    setLoading(false);
+  };
+  const count = urls.split('\n').filter(u=>u.trim()).length;
+
+  return (
+    <div className="fade-in">
+      <div className="card">
+        <div className="card-title">Bulk URL Submission</div>
+        <div className="card-sub">Submit up to 50 URLs at once — one per line. Results will appear in the Queue tab.</div>
+        <div className="field">
+          <label className="label">URLs {count>0&&<span style={{color:'var(--accent)',marginLeft:6}}>{count} URLs</span>}</label>
+          <textarea placeholder={"https://phish1.example.com\nhttps://phish2.example.com\nhttps://phish3.example.com"}
+            value={urls} onChange={e=>setUrls(e.target.value)} style={{minHeight:200}}/>
+        </div>
+        <div className="field">
+          <label className="label">Visibility</label>
+          <div className="toggle-group" style={{maxWidth:300}}>
+            {['public','unlisted','private'].map(v=>(
+              <button key={v} className={`toggle-btn${vis===v?' active':''}`} onClick={()=>setVis(v)}>{v}</button>
+            ))}
+          </div>
+        </div>
+        <div style={{display:'flex',gap:10,alignItems:'center'}}>
+          <button className="btn btn-primary" onClick={submit} disabled={loading||!urls.trim()||count>50}>
+            {loading?<><span className="spinner"/> Submitting {count} URLs…</>:`⬆ Submit ${count||''} URLs`}
+          </button>
+          {count>50&&<span style={{color:'var(--critical)',fontSize:11}}>Max 50 URLs per batch</span>}
+        </div>
+      </div>
+      {results?.error&&<div className="alert alert-error">✕ {results.error}</div>}
+      {results&&!results.error&&(
+        <div className="card fade-in">
+          <div className="card-title">Submission Results</div>
+          <div className="card-sub">
+            {results.submitted}/{results.results?.length} submitted
+            {results.sanitized_count>0&&<span style={{color:'var(--medium)',marginLeft:10}}>🧹 {results.sanitized_count} URL{results.sanitized_count>1?'s':''} sanitized</span>}
+            {' '}— check Queue tab for live status
+          </div>
+          <div style={{maxHeight:320,overflowY:'auto'}}>
+            {results.results?.map((r,i)=>(
+              <div key={i} className="bulk-item">
+                <span style={{color:r.status==='pending'?'var(--low)':'var(--critical)'}}>{r.status==='pending'?'✓':'✕'}</span>
+                <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}
+                  title={r.original_url||r.url}>{r.url}</span>
+                {r.sanitized&&<span className="san-badge">🧹 sanitized</span>}
+                {r.uuid&&<span style={{color:'var(--muted)',fontSize:10}}>{r.uuid.slice(0,8)}…</span>}
+                {r.error&&<span style={{color:'var(--critical)',fontSize:10}}>{r.error}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/* ── Search ── */
+const SearchTab = ({onDBUpdated}) => {
+  const [query,setQuery]=useState('');
+  const [size,setSize]=useState(20);
+  const [loading,setLoading]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [results,setResults]=useState(null);
+  const [error,setError]=useState(null);
+  const [saveMsg,setSaveMsg]=useState(null);
+  const [sortKey,setSortKey]=useState('date');
+  const [sortDir,setSortDir]=useState('desc');
+  const [filter,setFilter]=useState('all');
+
+  const hints = ['page.domain:paypal.com','page.ip:1.2.3.4','task.tags:phishing','verdicts.overall.malicious:true','task.url:login','page.url:verify'];
+
+  const search = async () => {
+    if (!query.trim()) return;
+    setLoading(true); setError(null); setResults(null); setSaveMsg(null);
+    try {
+      const d = await api(`/api/search?q=${encodeURIComponent(query)}&size=${size}`);
+      setResults(d);
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  };
+
+  const saveAll = async () => {
+    if (!results?.results?.length) return;
+    setSaving(true); setSaveMsg(null);
+    try {
+      const d = await api('/api/search/save',{method:'POST',body:JSON.stringify({results:results.results,query})});
+      setSaveMsg({type:'success',text:`Saved ${d.saved} new records to DB (${d.skipped} already existed)`});
+      onDBUpdated();
+    } catch(e) { setSaveMsg({type:'error',text:e.message}); }
+    setSaving(false);
+  };
+
+  const toggleSort = key => { if(sortKey===key) setSortDir(d=>d==='asc'?'desc':'asc'); else {setSortKey(key);setSortDir('desc');} };
+
+  const items = results?.results||[];
+  const filtered = items.filter(r=>{
+    if (filter==='malicious') return r.malicious;
+    if (filter==='safe') return !r.malicious;
+    return true;
+  });
+  const sorted = [...filtered].sort((a,b)=>{
+    let av=a[sortKey]||0, bv=b[sortKey]||0;
+    if (sortKey==='date') {av=new Date(a.date||0);bv=new Date(b.date||0);}
+    if (sortKey==='domain') {av=a.domain||'';bv=b.domain||'';}
+    if (av<bv) return sortDir==='asc'?-1:1;
+    if (av>bv) return sortDir==='asc'?1:-1;
+    return 0;
+  });
+
+  const malCount  = items.filter(r=>r.malicious).length;
+  const safeCount = items.filter(r=>!r.malicious).length;
+
+  return (
+    <div className="fade-in">
+      <div className="card">
+        <div className="card-title">Search urlscan.io Database</div>
+        <div className="card-sub">Query using Elasticsearch syntax — save results to your local DB for triage</div>
+        <div className="field">
+          <label className="label">Search Query</label>
+          <input type="text" placeholder='page.domain:example.com AND verdicts.overall.malicious:true'
+            value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>e.key==='Enter'&&search()}/>
+        </div>
+        <div className="field">
+          <label className="label">Example Queries</label>
+          <div>{hints.map(h=><span key={h} className="hint-chip" onClick={()=>setQuery(h)}>{h}</span>)}</div>
+        </div>
+        <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+          <button className="btn btn-primary" onClick={search} disabled={loading||!query.trim()}>
+            {loading?<><span className="spinner"/> Searching…</>:'🔍 Search'}
+          </button>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <label className="label" style={{margin:0}}>Results:</label>
+            <select value={size} onChange={e=>setSize(+e.target.value)} style={{width:'auto',padding:'8px 12px'}}>
+              {[10,20,50,100].map(n=><option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {error&&<div className="alert alert-error">✕ {error}</div>}
+
+      {results&&(
+        <div className="card fade-in">
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:12,flexWrap:'wrap',gap:10}}>
+            <div>
+              <div className="card-title">
+                Search Results
+                <span style={{fontWeight:400,color:'var(--muted)',marginLeft:10,fontSize:12}}>{results.total?.toLocaleString()} total matches</span>
+              </div>
+              <div className="card-sub" style={{margin:0}}>Showing {items.length} results — save to DB tab for persistent storage</div>
+            </div>
+            <button className="btn btn-save" onClick={saveAll} disabled={saving||!items.length}>
+              {saving?<><span className="spinner"/> Saving…</>:`💾 Save All ${items.length} to DB`}
+            </button>
+          </div>
+
+          {saveMsg&&<div className={`alert alert-${saveMsg.type}`}>{saveMsg.type==='success'?'✓':'✕'} {saveMsg.text}</div>}
+
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14,flexWrap:'wrap',gap:8}}>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {[{id:'all',label:`All (${items.length})`},{id:'malicious',label:`Malicious (${malCount})`},{id:'safe',label:`Safe (${safeCount})`}].map(f=>(
+                <button key={f.id} className={`toggle-btn${filter===f.id?' active':''}`}
+                  style={{flex:'none',padding:'5px 12px'}} onClick={()=>setFilter(f.id)}>{f.label}</button>
+              ))}
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontSize:10,color:'var(--muted)',textTransform:'uppercase',letterSpacing:1}}>Sort:</span>
+              {[{k:'score',l:'Score'},{k:'date',l:'Date'},{k:'domain',l:'Domain'}].map(s=>(
+                <button key={s.k} className={`sort-chip${sortKey===s.k?' active':''}`} onClick={()=>toggleSort(s.k)}>
+                  {s.l}{sortKey===s.k?(sortDir==='asc'?' ↑':' ↓'):''}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {sorted.length===0?(
+            <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">No results match this filter</div></div>
+          ):sorted.map((r,i)=>(
+            <div key={i} className="search-result">
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10}}>
+                <a className="search-result-url" href={r.result_url} target="_blank" rel="noreferrer">{trunc(r.url,80)}</a>
+                {r.malicious
+                  ? <span className="badge badge-malicious"><span className="badge-dot"/>Malicious{r.score>0&&<span style={{marginLeft:4,opacity:.7}}>{r.score}</span>}</span>
+                  : <span className="badge badge-safe"><span className="badge-dot"/>Safe{r.score>0&&<span style={{marginLeft:4,opacity:.7}}>{r.score}</span>}</span>
+                }
+              </div>
+              <div className="search-result-meta">
+                {r.domain&&<span>🌐 {r.domain}</span>}
+                {r.ip&&<span>📡 {r.ip}</span>}
+                {r.country&&<span>🗺 {r.country}</span>}
+                {r.date&&<span>🕐 {new Date(r.date).toLocaleDateString()}</span>}
+                {r.score>0&&<span style={{color:r.malicious?'var(--critical)':'var(--muted)'}}>Score: {r.score}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/* ── Queue ── */
+const QueueTab = ({scans,loading,onRefresh}) => {
+  const queue = scans.filter(s=>s.status==='pending'||s.status==='complete');
+  const pending  = queue.filter(s=>s.status==='pending').length;
+  const complete = queue.filter(s=>s.status==='complete').length;
+
+  const exportCSV = () => {
+    const h='UUID,URL,Status,Verdict,Score,Submitted\n';
+    const rows=queue.map(s=>[s.uuid,`"${s.url}"`,s.status,s.verdict_label||'',s.verdict_score||0,s.submitted_at||''].join(',')).join('\n');
+    const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([h+rows],{type:'text/csv'}));
+    a.download=`queue-${Date.now()}.csv`; a.click();
+  };
+
+  return (
+    <div className="fade-in">
+      <div className="grid3" style={{marginBottom:20}}>
+        {[
+          {label:'In Queue',val:queue.length,color:'var(--accent)'},
+          {label:'Pending',val:pending,color:'var(--pending)'},
+          {label:'Complete',val:complete,color:'var(--low)'},
+        ].map(m=>(
+          <div key={m.label} className="metric-card">
+            <div className="metric-val" style={{color:m.color}}>{m.val}</div>
+            <div className="metric-label">{m.label}</div>
+          </div>
+        ))}
+      </div>
+      <div className="card">
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+          <div>
+            <div className="card-title">Submission Queue</div>
+            <div className="card-sub" style={{margin:0}}>Live status of all submitted URLs — auto-refreshes every 12s</div>
+          </div>
+          <div style={{display:'flex',gap:8}}>
+            <button className="btn btn-ghost" onClick={onRefresh} disabled={loading}>{loading?<span className="spinner"/>:'↻'} Refresh</button>
+            <button className="btn btn-ghost" onClick={exportCSV} disabled={!queue.length}>↓ CSV</button>
+          </div>
+        </div>
+        {queue.length===0?(
+          <div className="empty">
+            <div className="empty-icon">📭</div>
+            <div className="empty-text">No submissions yet — use Submit URL or Bulk Scan to get started</div>
+          </div>
+        ):(
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>URL</th><th>Verdict</th><th>Score</th><th>Status</th><th>Submitted</th><th>Links</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queue.map(s=>(
+                  <tr key={s.uuid}>
+                    <td className="url-cell">
+                      <div style={{display:'flex',alignItems:'center',gap:6}}>
+                        <span title={s.original_url||s.url}>{trunc(s.url,46)}</span>
+                        {s.original_url&&(
+                          <span className="san-badge" title={`Original: ${s.original_url}\nStripped: ${s.sanitization_details?.stripped?.join(', ')}`}>
+                            🧹 {s.sanitization_method==='hybrid'?'AI':'auto'}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      {s.status==='pending'
+                        ?<span className="badge badge-pending"><span className="badge-dot"/>Scanning</span>
+                        :<VerdictBadge label={s.verdict_label} score={s.verdict_score}/>
+                      }
+                    </td>
+                    <td>{s.verdict_score>0?<ScoreBar score={s.verdict_score}/>:<span style={{color:'var(--muted)'}}>—</span>}</td>
+                    <td>
+                      <span style={{fontSize:11,textTransform:'uppercase',letterSpacing:.5,
+                        color:s.status==='pending'?'var(--pending)':s.status==='complete'?'var(--low)':'var(--muted)'}}>
+                        {s.status==='pending'&&<span className="spinner" style={{width:10,height:10,marginRight:5,verticalAlign:'middle'}}/>}
+                        {s.status}
+                      </span>
+                    </td>
+                    <td style={{color:'var(--muted)',fontSize:11}}>{timeAgo(s.submitted_at)}</td>
+                    <td>
+                      {s.result_url&&<a href={s.result_url} target="_blank" rel="noreferrer" style={{color:'var(--accent)',textDecoration:'none',fontSize:11,marginRight:8}}>Report ↗</a>}
+                      {s.screenshot_url&&s.status==='complete'&&<a href={s.screenshot_url} target="_blank" rel="noreferrer" style={{color:'var(--muted)',textDecoration:'none',fontSize:11}}>Screen ↗</a>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/* ── DB Tab ── */
+const DBTab = ({scans, loading, onRefresh}) => {
+  const [filter,setFilter]=useState('all');
+  const [sortKey,setSortKey]=useState('submitted_at');
+  const [sortDir,setSortDir]=useState('desc');
+  const [rescoring,setRescoring]=useState(false);
+  const [rescoreMsg,setRescoreMsg]=useState('');
+  const [expandedUuid,setExpandedUuid]=useState(null);
+
+  const handleRescore = async () => {
+    setRescoring(true); setRescoreMsg('');
+    try {
+      const r = await fetch('/api/rescore',{method:'POST'});
+      const d = await r.json();
+      setRescoreMsg(d.queued>0?`Re-fetching ${d.queued} record(s)…`:'All records already scored');
+      setTimeout(()=>{setRescoreMsg('');onRefresh();},4000);
+    } catch(e){ setRescoreMsg('Error'); }
+    finally { setRescoring(false); }
+  };
+
+  const db = scans.filter(s=>s.status==='complete'&&s.verdict_label);
+  const threats    = db.filter(s=>s.verdict_label==='malicious').length;
+  const suspicious = db.filter(s=>s.verdict_label==='suspicious').length;
+  const safe       = db.filter(s=>s.verdict_label==='safe').length;
+  const vtEnriched = db.filter(s=>s.vt_domain_total!=null||s.vt_ip_total!=null).length;
+
+  const filtered = db.filter(s=>{
+    if (filter==='malicious')  return s.verdict_label==='malicious';
+    if (filter==='suspicious') return s.verdict_label==='suspicious';
+    if (filter==='safe')       return s.verdict_label==='safe';
+    return true;
+  });
+
+  const toggleSort = key => { if(sortKey===key) setSortDir(d=>d==='asc'?'desc':'asc'); else {setSortKey(key);setSortDir('desc');} };
+
+  const sorted = [...filtered].sort((a,b)=>{
+    let av=a[sortKey]||0, bv=b[sortKey]||0;
+    if (sortKey==='verdict_score') {av=av||0;bv=bv||0;}
+    if (sortKey==='submitted_at') {av=new Date(av||0);bv=new Date(bv||0);}
+    if (sortKey==='verdict_label'||sortKey==='url') {av=av||'';bv=bv||'';}
+    if (av<bv) return sortDir==='asc'?-1:1;
+    if (av>bv) return sortDir==='asc'?1:-1;
+    return 0;
+  });
+
+  const SortTh = ({k,label}) => (
+    <th className={sortKey===k?'sorted':''} onClick={()=>toggleSort(k)}>
+      {label}{sortKey===k?<span style={{marginLeft:4}}>{sortDir==='asc'?'↑':'↓'}</span>:''}
+    </th>
+  );
+
+  const exportCSV = () => {
+    const h='UUID,URL,Verdict,Score,VT Domain,VT IP,VT URL,Submitted\n';
+    const rows=sorted.map(s=>[
+      s.uuid,`"${s.url}"`,s.verdict_label||'',s.verdict_score||0,
+      s.vt_domain_malicious!=null?`${s.vt_domain_malicious}/${s.vt_domain_total}`:'',
+      s.vt_ip_malicious!=null?`${s.vt_ip_malicious}/${s.vt_ip_total}`:'',
+      s.vt_url_malicious!=null?`${s.vt_url_malicious}/${s.vt_url_total}`:'',
+      s.submitted_at||''
+    ].join(',')).join('\n');
+    const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([h+rows],{type:'text/csv'}));
+    a.download=`db-${Date.now()}.csv`; a.click();
+  };
+
+  const toggleExpand = uuid => setExpandedUuid(prev => prev===uuid ? null : uuid);
+
+  return (
+    <div className="fade-in">
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:16,marginBottom:20}}>
+        {[
+          {label:'Total Records', val:db.length,      color:'var(--accent)'},
+          {label:'Malicious',     val:threats,         color:'var(--critical)'},
+          {label:'Suspicious',    val:suspicious,      color:'var(--high)'},
+          {label:'VT Enriched',   val:vtEnriched,      color:'var(--vt)'},
+        ].map(m=>(
+          <div key={m.label} className="metric-card">
+            <div className="metric-val" style={{color:m.color}}>{m.val}</div>
+            <div className="metric-label">{m.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="card">
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+          <div>
+            <div className="card-title">Results Database</div>
+            <div className="card-sub" style={{margin:0}}>Completed verdicts — click any row to view VirusTotal intelligence</div>
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            {rescoreMsg&&<span style={{fontSize:11,color:'var(--accent)',fontFamily:'var(--font-mono)'}}>{rescoreMsg}</span>}
+            <button className="btn btn-ghost" onClick={handleRescore} disabled={rescoring} title="Re-fetch scores for any unscored records">
+              {rescoring?<span className="spinner"/>:'⟳'} Rescore
+            </button>
+            <button className="btn btn-ghost" onClick={onRefresh} disabled={loading}>{loading?<span className="spinner"/>:'↻'} Refresh</button>
+            <button className="btn btn-ghost" onClick={exportCSV} disabled={!sorted.length}>↓ CSV</button>
+          </div>
+        </div>
+
+        <div style={{display:'flex',gap:6,marginBottom:16,flexWrap:'wrap'}}>
+          {[
+            {id:'all',       label:`All (${db.length})`},
+            {id:'malicious', label:`Malicious (${threats})`},
+            {id:'suspicious',label:`Suspicious (${suspicious})`},
+            {id:'safe',      label:`Safe (${safe})`},
+          ].map(f=>(
+            <button key={f.id} className={`toggle-btn${filter===f.id?' active':''}`}
+              style={{flex:'none',padding:'6px 14px'}} onClick={()=>setFilter(f.id)}>{f.label}</button>
+          ))}
+        </div>
+
+        {sorted.length===0?(
+          <div className="empty">
+            <div className="empty-icon">🗄</div>
+            <div className="empty-text">
+              {db.length===0
+                ?'No records yet — completed scans and saved search results will appear here'
+                :'No records match this filter'}
+            </div>
+          </div>
+        ):(
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <SortTh k="url"           label="URL"/>
+                  <SortTh k="verdict_label" label="Verdict"/>
+                  <SortTh k="verdict_score" label="Score"/>
+                  <th style={{color:'var(--vt)'}}>VT Domain</th>
+                  <th style={{color:'var(--vt)'}}>VT IP</th>
+                  <th style={{color:'var(--vt)'}}>VT URL</th>
+                  <SortTh k="submitted_at"  label="Saved"/>
+                  <th>Links</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map(s=>(
+                  <React.Fragment key={s.uuid}>
+                    <tr style={{cursor:'pointer'}} onClick={()=>toggleExpand(s.uuid)}>
+                      <td className="url-cell" title={s.url}>
+                        <span style={{marginRight:6,fontSize:10,color:'var(--muted)'}}>
+                          {expandedUuid===s.uuid ? '▼' : '▶'}
+                        </span>
+                        {trunc(s.url,44)}
+                      </td>
+                      <td><VerdictBadge label={s.verdict_label} score={null}/></td>
+                      <td><ScoreBar score={s.verdict_score}/></td>
+                      <td><VTBadge malicious={s.vt_domain_malicious} total={s.vt_domain_total}/></td>
+                      <td><VTBadge malicious={s.vt_ip_malicious}     total={s.vt_ip_total}/></td>
+                      <td><VTBadge malicious={s.vt_url_malicious}    total={s.vt_url_total}/></td>
+                      <td style={{color:'var(--muted)',fontSize:11}}>{timeAgo(s.submitted_at)}</td>
+                      <td onClick={e=>e.stopPropagation()}>
+                        {s.result_url&&<a href={s.result_url} target="_blank" rel="noreferrer"
+                          style={{color:'var(--accent)',textDecoration:'none',fontSize:11,marginRight:8}}>Report ↗</a>}
+                        {s.screenshot_url&&<a href={s.screenshot_url} target="_blank" rel="noreferrer"
+                          style={{color:'var(--muted)',textDecoration:'none',fontSize:11}}>Screen ↗</a>}
+                      </td>
+                    </tr>
+                    {expandedUuid===s.uuid&&(
+                      <tr className="expanded-row">
+                        <td colSpan={8} style={{paddingTop:0}}>
+                          <VTPanel scan={s} onEnriched={onRefresh}/>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/* ── VT Tab (ad-hoc triage) ── */
+const VTTab = () => {
+  const [domain,  setDomain]  = useState('');
+  const [ip,      setIp]      = useState('');
+  const [urls,    setUrls]    = useState('');
+  const [loading, setLoading] = useState(false);
+  const [result,  setResult]  = useState(null);
+  const [error,   setError]   = useState(null);
+
+  const run = async () => {
+    const urlList = urls.split('\n').map(u=>u.trim()).filter(Boolean);
+    if (!domain.trim() && !ip.trim() && !urlList.length) return;
+    setLoading(true); setResult(null); setError(null);
+    try {
+      const d = await api('/api/vt/lookup', {
+        method: 'POST',
+        body: JSON.stringify({domain: domain.trim()||null, ip: ip.trim()||null, urls: urlList})
+      });
+      setResult(d);
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  };
+
+  const clear = () => { setDomain(''); setIp(''); setUrls(''); setResult(null); setError(null); };
+
+  const VTDetailSection = ({title, icon, data, fields}) => {
+    if (!data || !Object.keys(data).length) return null;
+    const mal  = data.malicious ?? null;
+    const tot  = data.total     ?? null;
+    return (
+      <div className="vt-result-section">
+        <h4>{icon} {title}</h4>
+        <div style={{marginBottom:12}}>
+          <VTBadge malicious={mal} total={tot}/>
+          {data.note && <span style={{fontSize:11,color:'var(--muted)',marginLeft:10}}>{data.note}</span>}
+        </div>
+        {fields.map(([key,label])=> data[key] != null && data[key] !== '' ? (
+          <div key={key} className="vt-detail-row">
+            <span className="vt-detail-key">{label}</span>
+            <span className="vt-detail-val">{
+              typeof data[key]==='object'
+                ? Object.values(data[key]).join(', ') || '—'
+                : String(data[key])
+            }</span>
+          </div>
+        ) : null)}
+        {data.error&&<div style={{fontSize:11,color:'var(--critical)',marginTop:6}}>Error: {data.error}</div>}
+      </div>
+    );
+  };
+
+  const examplePhishDomains = ['paypa1-secure.com','login-account-verify.net','microsoft-support.xyz'];
+
+  return (
+    <div className="fade-in">
+      <div className="card" style={{borderColor:'rgba(167,139,250,.2)'}}>
+        <div className="card-title" style={{color:'var(--vt)'}}>🦠 VirusTotal Ad-hoc Lookup</div>
+        <div className="card-sub">
+          Manually check a sender domain, IP address, and/or URLs extracted from a phishing email
+        </div>
+
+        <div className="alert alert-vt" style={{marginBottom:20}}>
+          💡 Use this tab during phishing triage to check indicators before submitting a full URL scan.
+          VT enrichment also runs automatically on every urlscan.io scan result.
+        </div>
+
+        <div className="grid2" style={{marginBottom:16}}>
+          <div className="field" style={{margin:0}}>
+            <label className="label">Sender Domain</label>
+            <input type="text" placeholder="evil-login.com" value={domain} onChange={e=>setDomain(e.target.value)}/>
+            <div style={{marginTop:6}}>
+              {examplePhishDomains.map(d=>(
+                <span key={d} className="hint-chip" onClick={()=>setDomain(d)}>{d}</span>
+              ))}
+            </div>
+          </div>
+          <div className="field" style={{margin:0}}>
+            <label className="label">IP Address <span style={{color:'var(--muted)',fontWeight:400}}>(optional)</span></label>
+            <input type="text" placeholder="203.0.113.42" value={ip} onChange={e=>setIp(e.target.value)}/>
+          </div>
+        </div>
+
+        <div className="field">
+          <label className="label">URLs from Email Body <span style={{color:'var(--muted)',fontWeight:400}}>(one per line, up to 5)</span></label>
+          <textarea placeholder={"https://evil-login.com/secure/verify\nhttps://bit.ly/3xAmPl3\nhttps://redirect.to/phish"}
+            value={urls} onChange={e=>setUrls(e.target.value)} style={{minHeight:100}}/>
+        </div>
+
+        <div style={{display:'flex',gap:10,alignItems:'center'}}>
+          <button className="btn btn-primary" style={{background:'var(--vt)',color:'#000'}}
+            onClick={run} disabled={loading||(!domain.trim()&&!ip.trim()&&!urls.trim())}>
+            {loading?<><span className="spinner spinner-vt"/> Running VT Lookup…</>:'🔍 Run VT Lookup'}
+          </button>
+          {(domain||ip||urls||result)&&(
+            <button className="btn btn-ghost" onClick={clear}>✕ Clear</button>
+          )}
+        </div>
+      </div>
+
+      {error&&<div className="alert alert-error">✕ {error}</div>}
+
+      {result&&(
+        <div className="fade-in">
+          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
+            <div className="card-title" style={{margin:0}}>VT Results</div>
+            {/* overall risk summary */}
+            {(() => {
+              const dMal = result.domain?.malicious||0;
+              const iMal = result.ip?.malicious||0;
+              const uMal = Math.max(...(result.urls||[]).map(u=>u.malicious||0), 0);
+              const total = dMal + iMal + uMal;
+              if (total===0) return <span className="badge badge-safe"><span className="badge-dot"/>All Clean</span>;
+              if (total<=2)  return <span className="badge badge-suspicious"><span className="badge-dot"/>Suspicious</span>;
+              return <span className="badge badge-malicious"><span className="badge-dot"/>Malicious Indicators</span>;
+            })()}
+          </div>
+
+          <VTDetailSection
+            title="Domain Reputation"
+            icon="🌐"
+            data={result.domain}
+            fields={[
+              ['reputation','Reputation score'],
+              ['categories','Categories'],
+              ['tags','Tags'],
+            ]}
+          />
+
+          <VTDetailSection
+            title="IP Reputation"
+            icon="📡"
+            data={result.ip}
+            fields={[
+              ['country','Country'],
+              ['as_owner','AS Owner'],
+              ['asn','ASN'],
+              ['reputation','Reputation score'],
+            ]}
+          />
+
+          {result.urls?.length>0&&(
+            <div className="vt-result-section">
+              <h4>🔗 URL Reputation</h4>
+              {result.urls.map((u,i)=>(
+                <div key={i} style={{marginBottom:i<result.urls.length-1?14:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:4}}>
+                    <VTBadge malicious={u.malicious} total={u.total}/>
+                    <span style={{fontSize:11,color:'var(--muted)',wordBreak:'break-all'}}>{trunc(u.url,70)}</span>
+                  </div>
+                  {u.final_url&&u.final_url!==u.url&&(
+                    <div className="vt-detail-row">
+                      <span className="vt-detail-key">Final URL</span>
+                      <span className="vt-detail-val">{trunc(u.final_url,50)}</span>
+                    </div>
+                  )}
+                  {u.title&&(
+                    <div className="vt-detail-row">
+                      <span className="vt-detail-key">Page title</span>
+                      <span className="vt-detail-val">{u.title}</span>
+                    </div>
+                  )}
+                  {u.note&&<div style={{fontSize:11,color:'var(--muted)',marginTop:4}}>{u.note}</div>}
+                  {u.error&&<div style={{fontSize:11,color:'var(--critical)',marginTop:4}}>Error: {u.error}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/* ── App Shell ── */
+function App() {
+  const [tab,setTab]=useState('submit');
+  const [scans,setScans]=useState([]);
+  const [loadingScans,setLoadingScans]=useState(false);
+  const [vtConfigured,setVtConfigured]=useState(false);
+  const pollRef=useRef(null);
+
+  const fetchScans = useCallback(async()=>{
+    setLoadingScans(true);
+    try { const d=await api('/api/scans'); setScans(d); } catch(e){}
+    setLoadingScans(false);
+  },[]);
+
+  useEffect(()=>{
+    fetchScans();
+    pollRef.current=setInterval(fetchScans,12000);
+    // Check VT key status once on load
+    fetch('/api/vt/status').then(r=>r.json()).then(d=>setVtConfigured(d.configured)).catch(()=>{});
+    return ()=>clearInterval(pollRef.current);
+  },[fetchScans]);
+
+  const pending  = scans.filter(s=>s.status==='pending').length;
+  const dbCount  = scans.filter(s=>s.status==='complete'&&s.verdict_label).length;
+  const threats  = scans.filter(s=>s.verdict_label==='malicious').length;
+
+  const nav = [
+    {section:'Actions', items:[
+      {id:'submit',icon:'⬆',label:'Submit URL'},
+      {id:'bulk',  icon:'📋',label:'Bulk Scan'},
+      {id:'search',icon:'🔍',label:'Search'},
+    ]},
+    {section:'Results', items:[
+      {id:'queue',icon:'⏳',label:'Queue',   badge:pending>0?{val:pending,bg:'var(--pending)',fg:'#000'}:null},
+      {id:'db',   icon:'🗄',label:'Database',badge:threats>0?{val:threats,bg:'var(--critical)',fg:'#fff'}:null},
+    ]},
+    {section:'Intelligence', items:[
+      {id:'vt', icon:'🦠', label:'VT Lookup', vt:true,
+       badge:vtConfigured?{val:'ON',bg:'rgba(167,139,250,.25)',fg:'var(--vt)'}:{val:'OFF',bg:'rgba(74,96,128,.2)',fg:'var(--muted)'}},
+    ]},
+  ];
+
+  return (
+    <>
+      <header className="header">
+        <div className="logo">
+          <div className="logo-icon">🛡</div>
+          <div>
+            <div className="logo-text">PhishTriage</div>
+            <div className="logo-sub">urlscan.io + VirusTotal</div>
+          </div>
+        </div>
+        <div className="header-stats">
+          <div className="stat"><div className="stat-value">{scans.length}</div><div className="stat-label">Total</div></div>
+          <div className="stat"><div className="stat-value" style={{color:'var(--pending)'}}>{pending}</div><div className="stat-label">Pending</div></div>
+          <div className="stat"><div className="stat-value" style={{color:'var(--low)'}}>{dbCount}</div><div className="stat-label">In DB</div></div>
+          <div className="stat"><div className="stat-value" style={{color:'var(--critical)'}}>{threats}</div><div className="stat-label">Malicious</div></div>
+        </div>
+      </header>
+      <div className="app">
+        <nav className="sidebar">
+          {nav.map(group=>(
+            <React.Fragment key={group.section}>
+              <div className="nav-section">{group.section}</div>
+              {group.items.map(n=>(
+                <div key={n.id}
+                  className={`nav-item${tab===n.id?(n.vt?' active-vt':' active'):''}`}
+                  onClick={()=>setTab(n.id)}>
+                  <span>{n.icon}</span><span>{n.label}</span>
+                  {n.badge&&<span className="nav-badge" style={{background:n.badge.bg,color:n.badge.fg}}>{n.badge.val}</span>}
+                </div>
+              ))}
+            </React.Fragment>
+          ))}
+        </nav>
+        <main className="main">
+          {tab==='submit' && <SubmitTab onSubmitted={fetchScans}/>}
+          {tab==='bulk'   && <BulkTab   onSubmitted={fetchScans}/>}
+          {tab==='search' && <SearchTab onDBUpdated={fetchScans}/>}
+          {tab==='queue'  && <QueueTab  scans={scans} loading={loadingScans} onRefresh={fetchScans}/>}
+          {tab==='db'     && <DBTab     scans={scans} loading={loadingScans} onRefresh={fetchScans}/>}
+          {tab==='vt'     && <VTTab/>}
+        </main>
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
