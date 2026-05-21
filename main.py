@@ -511,8 +511,8 @@ async def bulk_scan(req: BulkSubmitRequest, background_tasks: BackgroundTasks):
                 "sanitized": r.get("sanitized", False),
                 "original_url": r.get("original_url"),
             })
-        except Exception as e:
-            results.append({"url": url, "uuid": None, "status": "failed", "error": str(e)})
+        except Exception:
+            results.append({"url": url, "uuid": None, "status": "failed", "error": "Internal error while submitting scan"})
         await asyncio.sleep(1.2)
     sanitized_count = sum(1 for r in results if r.get("sanitized"))
     return {
