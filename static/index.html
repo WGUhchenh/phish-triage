@@ -123,6 +123,15 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .san-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:10px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;background:rgba(255,215,64,.12);color:var(--medium);white-space:nowrap;cursor:default}
 .san-detail{font-size:10px;color:var(--muted);margin-top:6px;word-break:break-all;line-height:1.7}
 .san-detail code{color:var(--medium);background:rgba(255,215,64,.08);padding:1px 5px;border-radius:3px;font-family:var(--font-mono)}
+.review-list{display:grid;gap:10px;margin-top:12px}
+.review-item{padding:12px 14px;border:1px solid var(--border2);border-radius:8px;background:rgba(255,255,255,.02)}
+.review-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.review-meta{font-size:10px;color:var(--muted);margin-top:4px;word-break:break-all}
+.review-toggle{display:flex;gap:8px;flex-shrink:0}
+.review-btn{padding:6px 12px;border-radius:6px;border:1px solid var(--border2);background:var(--bg);color:var(--muted);cursor:pointer;font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:1px}
+.review-btn.active-keep{border-color:var(--low);color:var(--low);background:rgba(0,230,118,.08)}
+.review-btn.active-strip{border-color:var(--medium);color:var(--medium);background:rgba(255,215,64,.08)}
+.review-reason{font-size:11px;color:var(--text);margin-top:8px}
 .empty-icon{font-size:40px;margin-bottom:12px}
 .empty-text{font-size:12px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
@@ -146,6 +155,16 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .vt-detail-row:last-child{border-bottom:none}
 .vt-detail-key{color:var(--muted)}
 .vt-detail-val{color:var(--text);font-weight:500;text-align:right;max-width:200px;word-break:break-all}
+/* Column picker */
+.col-picker-btn{position:relative}
+.col-picker-panel{position:absolute;right:0;top:calc(100% + 6px);background:var(--surface);border:1px solid var(--border2);border-radius:8px;padding:12px;z-index:200;min-width:210px;max-height:420px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.col-picker-row{display:flex;align-items:center;gap:8px;padding:5px 4px;border-radius:4px;cursor:pointer;font-size:11px;color:var(--text);transition:background .1s;user-select:none}
+.col-picker-row:hover{background:rgba(255,255,255,.04)}
+.col-picker-row input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height:13px;flex-shrink:0}
+/* Drag states */
+th[draggable]{cursor:grab}
+th[draggable]:active{cursor:grabbing;opacity:.7}
+.th-drag-over{background:rgba(0,212,255,.08)!important;outline:1px solid var(--accent)}
 </style>
 </head>
 <body>
@@ -263,17 +282,57 @@ const SubmitTab = ({onSubmitted}) => {
   const [loading,setLoading]=useState(false);
   const [msg,setMsg]=useState(null);
   const [sanInfo,setSanInfo]=useState(null);
+  const [reviewInfo,setReviewInfo]=useState(null);
+  const [reviewChoices,setReviewChoices]=useState({});
 
-  const submit = async () => {
-    if (!url.trim()) return;
+  const submit = async (manualChoices=null) => {
+    const targetUrl = (reviewInfo?.original_url || url).trim();
+    if (!targetUrl) return;
     setLoading(true); setMsg(null); setSanInfo(null);
     try {
-      const d = await api('/api/scan',{method:'POST',body:JSON.stringify({url:url.trim(),visibility:vis})});
+      const reviewKeys = reviewInfo?.sanitization_details?.review?.map(item => item.key) || [];
+      const selected = manualChoices || reviewChoices;
+      const manual_strip_params = reviewKeys.filter(key => selected[key] === 'strip');
+      const manual_keep_params = reviewKeys.filter(key => selected[key] !== 'strip');
+      const d = await api('/api/scan',{
+        method:'POST',
+        body:JSON.stringify({
+          url:targetUrl,
+          visibility:vis,
+          manual_keep_params,
+          manual_strip_params,
+        })
+      });
+      if (d.status === 'review_required') {
+        const reviewItems = d.sanitization_details?.review || [];
+        const nextChoices = {};
+        reviewItems.forEach(item => {
+          nextChoices[item.key] = item.recommended_action === 'strip' ? 'strip' : 'keep';
+        });
+        setReviewChoices(nextChoices);
+        setReviewInfo({
+          original_url: targetUrl,
+          url: d.url,
+          sanitization_details: d.sanitization_details,
+        });
+        setMsg({type:'info',text:'A few parameters need review before this URL can be scanned.'});
+        setLoading(false);
+        return;
+      }
       setMsg({type:'success',text:`Submitted! UUID: ${d.uuid} — check Queue tab in ~30s`});
-      if (d.sanitized) setSanInfo(d);
-      setUrl(''); onSubmitted();
+      if (d.sanitization_details) setSanInfo(d);
+      setReviewInfo(null);
+      setReviewChoices({});
+      setUrl('');
+      onSubmitted();
     } catch(e) { setMsg({type:'error',text:e.message}); }
     setLoading(false);
+  };
+
+  const cancelReview = () => {
+    setReviewInfo(null);
+    setReviewChoices({});
+    setMsg({type:'info',text:'Review cancelled. Adjust the URL or try again.'});
   };
 
   return (
@@ -281,17 +340,66 @@ const SubmitTab = ({onSubmitted}) => {
       <div className="card">
         <div className="card-title">Submit URL for Scanning</div>
         <div className="card-sub">Submit a single URL to urlscan.io — results will appear in the Queue tab</div>
-        {msg&&<div className={`alert alert-${msg.type}`}>{msg.type==='success'?'✓':'✕'} {msg.text}</div>}
+        {msg&&<div className={`alert alert-${msg.type}`}>{msg.type==='success'?'✓':msg.type==='info'?'ℹ':'✕'} {msg.text}</div>}
         {sanInfo&&(
           <div className="alert alert-sanitized fade-in">
-            <div><strong>🧹 Tracking params stripped before scan</strong>
+            <div><strong>🧹 URL sanitization applied before scan</strong>
               {sanInfo.sanitization_details?.method==='hybrid'&&
                 <span style={{fontSize:10,marginLeft:8,opacity:.7}}>(AI-assisted)</span>}
+              {sanInfo.sanitization_details?.method==='manual_review'&&
+                <span style={{fontSize:10,marginLeft:8,opacity:.7}}>(manual review)</span>}
             </div>
             <div className="san-detail">
               <strong>Stripped:</strong> {sanInfo.sanitization_details?.stripped?.map(k=><code key={k}>{k}</code>)}
               {sanInfo.sanitization_details?.kept?.length>0&&<><br/><strong>Kept:</strong> {sanInfo.sanitization_details.kept.map(k=><code key={k}>{k}</code>)}</>}
               <br/><strong>Scanned as:</strong> <code style={{color:'var(--accent)'}}>{sanInfo.url}</code>
+            </div>
+          </div>
+        )}
+        {reviewInfo&&(
+          <div className="alert alert-info fade-in" style={{display:'block'}}>
+            <div><strong>Review uncertain parameters before submission</strong></div>
+            <div className="san-detail">
+              <strong>Original:</strong> <code>{reviewInfo.original_url}</code>
+              <br/><strong>Current sanitized preview:</strong> <code style={{color:'var(--accent)'}}>{reviewInfo.url}</code>
+              {reviewInfo.sanitization_details?.errors?.length>0&&<><br/><strong>Why review is required:</strong> {reviewInfo.sanitization_details.errors.join(' | ')}</>}
+            </div>
+            <div className="review-list">
+              {reviewInfo.sanitization_details?.review?.map(item=>(
+                <div key={item.key} className="review-item">
+                  <div className="review-head">
+                    <div style={{minWidth:0}}>
+                      <div><code>{item.key}</code></div>
+                      <div className="review-meta">{item.value}</div>
+                    </div>
+                    <div className="review-toggle">
+                      <button
+                        className={`review-btn${reviewChoices[item.key] !== 'strip' ? ' active-keep' : ''}`}
+                        onClick={()=>setReviewChoices(prev=>({...prev,[item.key]:'keep'}))}
+                      >
+                        Keep
+                      </button>
+                      <button
+                        className={`review-btn${reviewChoices[item.key] === 'strip' ? ' active-strip' : ''}`}
+                        onClick={()=>setReviewChoices(prev=>({...prev,[item.key]:'strip'}))}
+                      >
+                        Strip
+                      </button>
+                    </div>
+                  </div>
+                  <div className="review-reason">
+                    {item.reason}
+                    {item.recommended_action==='strip'&&<span style={{color:'var(--medium)'}}> Recommended: strip</span>}
+                    {item.recommended_action==='keep'&&<span style={{color:'var(--low)'}}> Recommended: keep</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{display:'flex',gap:10,marginTop:14,flexWrap:'wrap'}}>
+              <button className="btn btn-primary" onClick={()=>submit(reviewChoices)} disabled={loading}>
+                {loading?<><span className="spinner"/> Submitting reviewed URL…</>:'Submit Reviewed URL'}
+              </button>
+              <button className="btn btn-ghost" onClick={cancelReview} disabled={loading}>Cancel Review</button>
             </div>
           </div>
         )}
@@ -309,7 +417,7 @@ const SubmitTab = ({onSubmitted}) => {
           </div>
         </div>
         <button className="btn btn-primary" onClick={submit} disabled={loading||!url.trim()}>
-          {loading?<><span className="spinner"/> Submitting…</>:'⬆ Submit URL'}
+          {loading?<><span className="spinner"/> Checking URL…</>:'⬆ Review & Submit URL'}
         </button>
       </div>
 
@@ -415,11 +523,14 @@ const BulkTab = ({onSubmitted}) => {
           <div style={{maxHeight:320,overflowY:'auto'}}>
             {results.results?.map((r,i)=>(
               <div key={i} className="bulk-item">
-                <span style={{color:r.status==='pending'?'var(--low)':'var(--critical)'}}>{r.status==='pending'?'✓':'✕'}</span>
+                <span style={{color:r.status==='pending'?'var(--low)':r.status==='review_required'?'var(--medium)':'var(--critical)'}}>
+                  {r.status==='pending'?'✓':r.status==='review_required'?'⚠':'✕'}
+                </span>
                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}
                   title={r.original_url||r.url}>{r.url}</span>
                 {r.sanitized&&<span className="san-badge">🧹 sanitized</span>}
                 {r.uuid&&<span style={{color:'var(--muted)',fontSize:10}}>{r.uuid.slice(0,8)}…</span>}
+                {r.status==='review_required'&&<span style={{color:'var(--medium)',fontSize:10}}>manual review needed</span>}
                 {r.error&&<span style={{color:'var(--critical)',fontSize:10}}>{r.error}</span>}
               </div>
             ))}
@@ -634,7 +745,7 @@ const QueueTab = ({scans,loading,onRefresh}) => {
                         <span title={s.original_url||s.url}>{trunc(s.url,46)}</span>
                         {s.original_url&&(
                           <span className="san-badge" title={`Original: ${s.original_url}\nStripped: ${s.sanitization_details?.stripped?.join(', ')}`}>
-                            🧹 {s.sanitization_method==='hybrid'?'AI':'auto'}
+                            🧹 {s.sanitization_method==='hybrid'?'AI':s.sanitization_method==='manual_review'?'manual':'auto'}
                           </span>
                         )}
                       </div>
@@ -669,6 +780,108 @@ const QueueTab = ({scans,loading,onRefresh}) => {
   );
 };
 
+/* ── Column Config ── */
+const COLUMN_DEFS = [
+  {key:'url',                    label:'URL',           defaultVisible:true,  sortable:true},
+  {key:'verdict_label',          label:'Verdict',       defaultVisible:true,  sortable:true},
+  {key:'verdict_score',          label:'Score',         defaultVisible:true,  sortable:true},
+  {key:'page_title',             label:'Page Title',    defaultVisible:true,  sortable:false},
+  {key:'rdap_domain_age_days',   label:'Domain Age',    defaultVisible:true,  sortable:true},
+  {key:'vt_domain',              label:'VT Domain',     defaultVisible:true,  sortable:false},
+  {key:'vt_ip',                  label:'VT IP',         defaultVisible:true,  sortable:false},
+  {key:'vt_url',                 label:'VT URL',        defaultVisible:true,  sortable:false},
+  {key:'submitted_at',           label:'Saved',         defaultVisible:true,  sortable:true},
+  {key:'links',                  label:'Links',         defaultVisible:true,  sortable:false},
+  {key:'page_domain',            label:'Domain',        defaultVisible:false, sortable:true},
+  {key:'page_ip',                label:'IP',            defaultVisible:false, sortable:false},
+  {key:'page_country',           label:'Country',       defaultVisible:false, sortable:true},
+  {key:'page_asnname',           label:'ASN Name',      defaultVisible:false, sortable:false},
+  {key:'page_status',            label:'HTTP Status',   defaultVisible:false, sortable:true},
+  {key:'page_redirected',        label:'Redirected',    defaultVisible:false, sortable:false},
+  {key:'tls_issuer',             label:'TLS Issuer',    defaultVisible:false, sortable:false},
+  {key:'gsb_match',              label:'GSB',           defaultVisible:false, sortable:false},
+  {key:'redirect_count',         label:'Redirects',     defaultVisible:false, sortable:true},
+  {key:'vt_domain_reputation',   label:'VT Rep',        defaultVisible:false, sortable:true},
+  {key:'vt_domain_categories',   label:'VT Categories', defaultVisible:false, sortable:false},
+  {key:'registrar',              label:'Registrar',     defaultVisible:false, sortable:false},
+  {key:'registered_at',          label:'Registered',    defaultVisible:false, sortable:false},
+  {key:'vt_ip_country',          label:'IP Country',    defaultVisible:false, sortable:false},
+  {key:'vt_ip_asn',              label:'IP ASN',        defaultVisible:false, sortable:false},
+  {key:'vt_url_threat_names',    label:'Threats',       defaultVisible:false, sortable:false},
+  {key:'rdap_registered_at',     label:'Registered',    defaultVisible:false, sortable:false},
+  {key:'rdap_expires_at',        label:'Expires',       defaultVisible:false, sortable:false},
+  {key:'rdap_registrar',         label:'Registrar',     defaultVisible:false, sortable:false},
+  {key:'rdap_status',            label:'RDAP Status',   defaultVisible:false, sortable:false},
+];
+
+const COL_STORAGE_KEY = 'db_col_config_v1';
+
+const useColumnConfig = () => {
+  const [config, setConfig] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COL_STORAGE_KEY));
+      if (Array.isArray(saved) && saved.length) {
+        const savedMap = new Map(saved.map(c => [c.key, c]));
+        const merged = saved.filter(c => COLUMN_DEFS.find(d => d.key === c.key));
+        COLUMN_DEFS.forEach(d => { if (!savedMap.has(d.key)) merged.push({key:d.key, visible:d.defaultVisible}); });
+        return merged;
+      }
+    } catch(e) {}
+    return COLUMN_DEFS.map(d => ({key:d.key, visible:d.defaultVisible}));
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(COL_STORAGE_KEY, JSON.stringify(config)); } catch(e) {}
+  }, [config]);
+
+  const visibleKeys = config.filter(c => c.visible).map(c => c.key);
+
+  const reorder = (fromKey, toKey) => {
+    if (fromKey === toKey) return;
+    setConfig(prev => {
+      const arr = [...prev];
+      const fi = arr.findIndex(c => c.key === fromKey);
+      const ti = arr.findIndex(c => c.key === toKey);
+      const [item] = arr.splice(fi, 1);
+      arr.splice(ti, 0, item);
+      return arr;
+    });
+  };
+
+  const toggle = key => setConfig(prev => prev.map(c => c.key === key ? {...c, visible: !c.visible} : c));
+  const reset  = ()  => { setConfig(COLUMN_DEFS.map(d => ({key:d.key, visible:d.defaultVisible}))); try { localStorage.removeItem(COL_STORAGE_KEY); } catch(e) {} };
+
+  return {config, visibleKeys, reorder, toggle, reset};
+};
+
+const ColumnPicker = ({config, toggle, reset, onClose}) => {
+  const panelRef = useRef(null);
+  useEffect(() => {
+    const h = e => { if (panelRef.current && !panelRef.current.contains(e.target)) onClose(); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [onClose]);
+  return (
+    <div ref={panelRef} className="col-picker-panel">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,paddingBottom:8,borderBottom:'1px solid var(--border)'}}>
+        <span style={{fontSize:10,textTransform:'uppercase',letterSpacing:1.5,color:'var(--muted)'}}>Columns</span>
+        <button onClick={reset} style={{background:'none',border:'none',color:'var(--muted)',cursor:'pointer',fontSize:10,fontFamily:'var(--font-mono)'}}>Reset</button>
+      </div>
+      <div style={{fontSize:10,color:'var(--muted)',marginBottom:8,opacity:.7}}>Drag table headers to reorder</div>
+      {config.map(c => {
+        const def = COLUMN_DEFS.find(d => d.key === c.key);
+        if (!def) return null;
+        return (
+          <label key={c.key} className="col-picker-row">
+            <input type="checkbox" checked={c.visible} onChange={() => toggle(c.key)}/>
+            <span>{def.label}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+};
+
 /* ── DB Tab ── */
 const DBTab = ({scans, loading, onRefresh}) => {
   const [filter,setFilter]=useState('all');
@@ -677,6 +890,11 @@ const DBTab = ({scans, loading, onRefresh}) => {
   const [rescoring,setRescoring]=useState(false);
   const [rescoreMsg,setRescoreMsg]=useState('');
   const [expandedUuid,setExpandedUuid]=useState(null);
+  const [pickerOpen,setPickerOpen]=useState(false);
+  const dragKey = useRef(null);
+  const [dragOverKey,setDragOverKey]=useState(null);
+
+  const {config, visibleKeys, reorder, toggle, reset} = useColumnConfig();
 
   const handleRescore = async () => {
     setRescoring(true); setRescoreMsg('');
@@ -704,29 +922,37 @@ const DBTab = ({scans, loading, onRefresh}) => {
 
   const toggleSort = key => { if(sortKey===key) setSortDir(d=>d==='asc'?'desc':'asc'); else {setSortKey(key);setSortDir('desc');} };
 
+  const sortValue = (s, key) => {
+    switch(key) {
+      case 'verdict_score':        return s.verdict_score||0;
+      case 'submitted_at':         return new Date(s.submitted_at||0);
+      case 'rdap_domain_age_days': return s.rdap_domain_age_days??9999;
+      case 'page_status':          return s.page_status||0;
+      case 'redirect_count':       return s.redirect_count||0;
+      case 'vt_domain_reputation': return s.vt_domain_reputation??0;
+      case 'page_country':         return s.page_country||'';
+      case 'page_domain':          return s.page_domain||'';
+      case 'verdict_label':        return s.verdict_label||'';
+      case 'url':                  return s.url||'';
+      default:                     return s[key]||'';
+    }
+  };
+
   const sorted = [...filtered].sort((a,b)=>{
-    let av=a[sortKey]||0, bv=b[sortKey]||0;
-    if (sortKey==='verdict_score') {av=av||0;bv=bv||0;}
-    if (sortKey==='submitted_at') {av=new Date(av||0);bv=new Date(bv||0);}
-    if (sortKey==='verdict_label'||sortKey==='url') {av=av||'';bv=bv||'';}
+    const av=sortValue(a,sortKey), bv=sortValue(b,sortKey);
     if (av<bv) return sortDir==='asc'?-1:1;
     if (av>bv) return sortDir==='asc'?1:-1;
     return 0;
   });
 
-  const SortTh = ({k,label}) => (
-    <th className={sortKey===k?'sorted':''} onClick={()=>toggleSort(k)}>
-      {label}{sortKey===k?<span style={{marginLeft:4}}>{sortDir==='asc'?'↑':'↓'}</span>:''}
-    </th>
-  );
-
   const exportCSV = () => {
-    const h='UUID,URL,Verdict,Score,VT Domain,VT IP,VT URL,Submitted\n';
+    const h='UUID,URL,Verdict,Score,VT Domain,VT IP,VT URL,Domain Age,Submitted\n';
     const rows=sorted.map(s=>[
       s.uuid,`"${s.url}"`,s.verdict_label||'',s.verdict_score||0,
       s.vt_domain_malicious!=null?`${s.vt_domain_malicious}/${s.vt_domain_total}`:'',
       s.vt_ip_malicious!=null?`${s.vt_ip_malicious}/${s.vt_ip_total}`:'',
       s.vt_url_malicious!=null?`${s.vt_url_malicious}/${s.vt_url_total}`:'',
+      s.rdap_domain_age_days!=null?`${s.rdap_domain_age_days}d`:'',
       s.submitted_at||''
     ].join(',')).join('\n');
     const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([h+rows],{type:'text/csv'}));
@@ -735,14 +961,92 @@ const DBTab = ({scans, loading, onRefresh}) => {
 
   const toggleExpand = uuid => setExpandedUuid(prev => prev===uuid ? null : uuid);
 
+  const visibleDefs = visibleKeys.map(k => COLUMN_DEFS.find(d => d.key===k)).filter(Boolean);
+
+  const VT_KEYS = new Set(['vt_domain','vt_ip','vt_url','vt_domain_reputation','vt_domain_categories','vt_domain_registrar','vt_domain_creation_date','vt_ip_country','vt_ip_asn','vt_url_threat_names']);
+  const RDAP_KEYS = new Set(['rdap_domain_age_days','rdap_registered_at','rdap_expires_at','rdap_registrar','rdap_status']);
+
+  const renderCell = (key, s) => {
+    switch(key) {
+      case 'url': return (
+        <td key={key} className="url-cell" title={s.url}>
+          <span style={{marginRight:6,fontSize:10,color:'var(--muted)'}}>{expandedUuid===s.uuid?'▼':'▶'}</span>
+          <span>{trunc(s.url,36)}</span>
+          {s.original_url&&<span className="san-badge" title={`Original: ${s.original_url}`} style={{marginLeft:4}}>🧹</span>}
+        </td>
+      );
+      case 'verdict_label': return <td key={key}><VerdictBadge label={s.verdict_label} score={null}/></td>;
+      case 'verdict_score': return <td key={key}><ScoreBar score={s.verdict_score}/></td>;
+      case 'page_title':    return <td key={key} style={{fontSize:11,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={s.page_title}>{s.page_title||<span style={{color:'var(--muted)'}}>—</span>}</td>;
+      case 'rdap_domain_age_days': return (
+        <td key={key}>{s.rdap_domain_age_days!=null
+          ? <span style={{fontSize:11,fontWeight:s.rdap_domain_age_days<30?700:400,color:s.rdap_domain_age_days<7?'var(--critical)':s.rdap_domain_age_days<30?'var(--high)':s.rdap_domain_age_days<90?'var(--medium)':'var(--muted)'}}>{s.rdap_domain_age_days}d</span>
+          : <span style={{color:'var(--muted)',fontSize:11}}>—</span>}
+        </td>
+      );
+      case 'vt_domain': return <td key={key}><VTBadge malicious={s.vt_domain_malicious} total={s.vt_domain_total}/></td>;
+      case 'vt_ip':     return <td key={key}><VTBadge malicious={s.vt_ip_malicious}     total={s.vt_ip_total}/></td>;
+      case 'vt_url':    return <td key={key}><VTBadge malicious={s.vt_url_malicious}    total={s.vt_url_total}/></td>;
+      case 'submitted_at': return <td key={key} style={{color:'var(--muted)',fontSize:11}}>{timeAgo(s.submitted_at)}</td>;
+      case 'links': return (
+        <td key={key} onClick={e=>e.stopPropagation()}>
+          {s.result_url&&<a href={s.result_url} target="_blank" rel="noreferrer" style={{color:'var(--accent)',textDecoration:'none',fontSize:11,marginRight:8}}>Report ↗</a>}
+          {s.screenshot_url&&<a href={s.screenshot_url} target="_blank" rel="noreferrer" style={{color:'var(--muted)',textDecoration:'none',fontSize:11}}>Screen ↗</a>}
+        </td>
+      );
+      case 'page_domain':   return <td key={key} style={{fontSize:11}}>{s.page_domain||<span style={{color:'var(--muted)'}}>—</span>}</td>;
+      case 'page_ip':       return <td key={key} style={{fontSize:11,color:'var(--muted)'}}>{s.page_ip||'—'}</td>;
+      case 'page_country':  return <td key={key} style={{fontSize:11}}>{s.page_country||<span style={{color:'var(--muted)'}}>—</span>}</td>;
+      case 'page_asnname':  return <td key={key} style={{fontSize:11,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'var(--muted)'}} title={s.page_asnname}>{s.page_asnname||'—'}</td>;
+      case 'page_status':   return <td key={key} style={{fontSize:11,color:s.page_status>=400?'var(--high)':'var(--muted)'}}>{s.page_status||'—'}</td>;
+      case 'page_redirected': return <td key={key} style={{fontSize:11}}>{s.page_redirected!=null?(s.page_redirected?<span style={{color:'var(--medium)'}}>Yes</span>:'No'):<span style={{color:'var(--muted)'}}>—</span>}</td>;
+      case 'tls_issuer':    return <td key={key} style={{fontSize:10,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'var(--muted)'}} title={s.tls_issuer}>{s.tls_issuer||'—'}</td>;
+      case 'gsb_match':     return <td key={key}>{s.gsb_match!=null?(s.gsb_match?<span style={{color:'var(--critical)',fontSize:11,fontWeight:700}}>HIT</span>:<span style={{color:'var(--muted)',fontSize:11}}>—</span>):<span style={{color:'var(--muted)',fontSize:11}}>—</span>}</td>;
+      case 'redirect_count': return <td key={key} style={{fontSize:11,color:'var(--muted)'}}>{s.redirect_count!=null?s.redirect_count:'—'}</td>;
+      case 'vt_domain_reputation': return <td key={key} style={{fontSize:11,fontWeight:s.vt_domain_reputation&&s.vt_domain_reputation<-5?700:400,color:s.vt_domain_reputation<0?'var(--critical)':s.vt_domain_reputation>0?'var(--low)':'var(--muted)'}}>{s.vt_domain_reputation!=null?s.vt_domain_reputation:'—'}</td>;
+      case 'vt_domain_categories': {
+        const cats = s.vt_domain_categories ? Object.values(s.vt_domain_categories).join(', ') : '';
+        return <td key={key} style={{fontSize:10,color:'var(--muted)',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={cats}>{cats||'—'}</td>;
+      }
+      case 'registrar': {
+        const reg = s.rdap_registrar || s.vt_domain_registrar;
+        const src = s.rdap_registrar ? null : s.vt_domain_registrar ? 'vt' : null;
+        return <td key={key} style={{fontSize:11,maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={reg||''}>
+          {reg ? <><span style={{color:'var(--text)'}}>{reg}</span>{src&&<span style={{fontSize:9,color:'var(--muted)',marginLeft:4}}>vt</span>}</> : <span style={{color:'var(--muted)'}}>—</span>}
+        </td>;
+      }
+      case 'registered_at': {
+        const date = s.rdap_registered_at || s.vt_domain_creation_date;
+        const src  = s.rdap_registered_at ? null : s.vt_domain_creation_date ? 'vt' : null;
+        return <td key={key} style={{fontSize:11,color:'var(--muted)'}}>
+          {date ? <><span>{new Date(date).toLocaleDateString()}</span>{src&&<span style={{fontSize:9,marginLeft:4}}>vt</span>}</> : '—'}
+        </td>;
+      }
+      case 'vt_ip_country': return <td key={key} style={{fontSize:11}}>{s.vt_ip_country||<span style={{color:'var(--muted)'}}>—</span>}</td>;
+      case 'vt_ip_asn':     return <td key={key} style={{fontSize:11,color:'var(--muted)'}}>{s.vt_ip_asn||'—'}</td>;
+      case 'vt_url_threat_names': {
+        const names = Array.isArray(s.vt_url_threat_names)&&s.vt_url_threat_names.length ? s.vt_url_threat_names.join(', ') : '';
+        return <td key={key} style={{fontSize:10,color:'var(--high)',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={names}>{names||<span style={{color:'var(--muted)'}}>—</span>}</td>;
+      }
+      case 'rdap_registered_at': return <td key={key} style={{fontSize:11,color:'var(--muted)'}}>{s.rdap_registered_at?new Date(s.rdap_registered_at).toLocaleDateString():'—'}</td>;
+      case 'rdap_expires_at':    return <td key={key} style={{fontSize:11,color:'var(--muted)'}}>{s.rdap_expires_at?new Date(s.rdap_expires_at).toLocaleDateString():'—'}</td>;
+      case 'rdap_registrar':     return <td key={key} style={{fontSize:11,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'var(--muted)'}} title={s.rdap_registrar}>{s.rdap_registrar||'—'}</td>;
+      case 'rdap_status': {
+        const st = Array.isArray(s.rdap_status)&&s.rdap_status.length ? s.rdap_status[0] : '';
+        return <td key={key} style={{fontSize:10,color:'var(--muted)'}}>{st||'—'}</td>;
+      }
+      default: return <td key={key} style={{color:'var(--muted)'}}>—</td>;
+    }
+  };
+
   return (
     <div className="fade-in">
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:16,marginBottom:20}}>
         {[
-          {label:'Total Records', val:db.length,      color:'var(--accent)'},
-          {label:'Malicious',     val:threats,         color:'var(--critical)'},
-          {label:'Suspicious',    val:suspicious,      color:'var(--high)'},
-          {label:'VT Enriched',   val:vtEnriched,      color:'var(--vt)'},
+          {label:'Total Records', val:db.length,  color:'var(--accent)'},
+          {label:'Malicious',     val:threats,     color:'var(--critical)'},
+          {label:'Suspicious',    val:suspicious,  color:'var(--high)'},
+          {label:'VT Enriched',   val:vtEnriched,  color:'var(--vt)'},
         ].map(m=>(
           <div key={m.label} className="metric-card">
             <div className="metric-val" style={{color:m.color}}>{m.val}</div>
@@ -755,15 +1059,20 @@ const DBTab = ({scans, loading, onRefresh}) => {
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
           <div>
             <div className="card-title">Results Database</div>
-            <div className="card-sub" style={{margin:0}}>Completed verdicts — click any row to view VirusTotal intelligence</div>
+            <div className="card-sub" style={{margin:0}}>Completed verdicts — click row to expand · drag headers to reorder</div>
           </div>
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
             {rescoreMsg&&<span style={{fontSize:11,color:'var(--accent)',fontFamily:'var(--font-mono)'}}>{rescoreMsg}</span>}
-            <button className="btn btn-ghost" onClick={handleRescore} disabled={rescoring} title="Re-fetch scores for any unscored records">
+            <button className="btn btn-ghost" onClick={handleRescore} disabled={rescoring}>
               {rescoring?<span className="spinner"/>:'⟳'} Rescore
             </button>
             <button className="btn btn-ghost" onClick={onRefresh} disabled={loading}>{loading?<span className="spinner"/>:'↻'} Refresh</button>
             <button className="btn btn-ghost" onClick={exportCSV} disabled={!sorted.length}>↓ CSV</button>
+            <div style={{position:'relative'}} className="col-picker-btn">
+              <button className="btn btn-ghost" onClick={()=>setPickerOpen(o=>!o)}
+                style={{color:pickerOpen?'var(--accent)':''}}>⊞ Columns ({visibleKeys.length})</button>
+              {pickerOpen&&<ColumnPicker config={config} toggle={toggle} reset={reset} onClose={()=>setPickerOpen(false)}/>}
+            </div>
           </div>
         </div>
 
@@ -782,53 +1091,38 @@ const DBTab = ({scans, loading, onRefresh}) => {
         {sorted.length===0?(
           <div className="empty">
             <div className="empty-icon">🗄</div>
-            <div className="empty-text">
-              {db.length===0
-                ?'No records yet — completed scans and saved search results will appear here'
-                :'No records match this filter'}
-            </div>
+            <div className="empty-text">{db.length===0?'No records yet — completed scans and saved search results will appear here':'No records match this filter'}</div>
           </div>
         ):(
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <SortTh k="url"           label="URL"/>
-                  <SortTh k="verdict_label" label="Verdict"/>
-                  <SortTh k="verdict_score" label="Score"/>
-                  <th style={{color:'var(--vt)'}}>VT Domain</th>
-                  <th style={{color:'var(--vt)'}}>VT IP</th>
-                  <th style={{color:'var(--vt)'}}>VT URL</th>
-                  <SortTh k="submitted_at"  label="Saved"/>
-                  <th>Links</th>
+                  {visibleDefs.map(col=>(
+                    <th key={col.key}
+                      draggable
+                      onDragStart={()=>{ dragKey.current=col.key; }}
+                      onDragOver={e=>{ e.preventDefault(); setDragOverKey(col.key); }}
+                      onDragLeave={()=>setDragOverKey(null)}
+                      onDrop={e=>{ e.preventDefault(); if(dragKey.current&&dragKey.current!==col.key) reorder(dragKey.current,col.key); dragKey.current=null; setDragOverKey(null); }}
+                      className={[sortKey===col.key?'sorted':'', dragOverKey===col.key?'th-drag-over':''].filter(Boolean).join(' ')}
+                      style={{color:VT_KEYS.has(col.key)?'var(--vt)':RDAP_KEYS.has(col.key)?'var(--accent)':''}}
+                      onClick={()=>col.sortable&&toggleSort(col.key)}
+                    >
+                      {col.label}{col.sortable&&sortKey===col.key?<span style={{marginLeft:4}}>{sortDir==='asc'?'↑':'↓'}</span>:''}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
                 {sorted.map(s=>(
                   <React.Fragment key={s.uuid}>
                     <tr style={{cursor:'pointer'}} onClick={()=>toggleExpand(s.uuid)}>
-                      <td className="url-cell" title={s.url}>
-                        <span style={{marginRight:6,fontSize:10,color:'var(--muted)'}}>
-                          {expandedUuid===s.uuid ? '▼' : '▶'}
-                        </span>
-                        {trunc(s.url,44)}
-                      </td>
-                      <td><VerdictBadge label={s.verdict_label} score={null}/></td>
-                      <td><ScoreBar score={s.verdict_score}/></td>
-                      <td><VTBadge malicious={s.vt_domain_malicious} total={s.vt_domain_total}/></td>
-                      <td><VTBadge malicious={s.vt_ip_malicious}     total={s.vt_ip_total}/></td>
-                      <td><VTBadge malicious={s.vt_url_malicious}    total={s.vt_url_total}/></td>
-                      <td style={{color:'var(--muted)',fontSize:11}}>{timeAgo(s.submitted_at)}</td>
-                      <td onClick={e=>e.stopPropagation()}>
-                        {s.result_url&&<a href={s.result_url} target="_blank" rel="noreferrer"
-                          style={{color:'var(--accent)',textDecoration:'none',fontSize:11,marginRight:8}}>Report ↗</a>}
-                        {s.screenshot_url&&<a href={s.screenshot_url} target="_blank" rel="noreferrer"
-                          style={{color:'var(--muted)',textDecoration:'none',fontSize:11}}>Screen ↗</a>}
-                      </td>
+                      {visibleDefs.map(col=>renderCell(col.key, s))}
                     </tr>
                     {expandedUuid===s.uuid&&(
                       <tr className="expanded-row">
-                        <td colSpan={8} style={{paddingTop:0}}>
+                        <td colSpan={visibleDefs.length} style={{paddingTop:0}}>
                           <VTPanel scan={s} onEnriched={onRefresh}/>
                         </td>
                       </tr>

@@ -4,7 +4,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
@@ -12,8 +12,8 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from sqlalchemy import Column, DateTime, Float, String, Text, create_engine
+from pydantic import BaseModel, Field
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -48,17 +48,75 @@ class ScanRecord(Base):
     original_url         = Column(String, nullable=True)   # pre-sanitization URL
     sanitization_method  = Column(String, nullable=True)   # 'heuristic' | 'hybrid' | None
     sanitization_details = Column(Text,   nullable=True)   # JSON {stripped:[...], kept:[...]}
+    # URLScan parsed fields (from raw_result)
+    page_title           = Column(String,  nullable=True)
+    page_country         = Column(String,  nullable=True)
+    page_asn             = Column(String,  nullable=True)
+    page_asnname         = Column(String,  nullable=True)
+    page_status          = Column(Integer, nullable=True)
+    page_redirected      = Column(Boolean, nullable=True)
+    tls_issuer           = Column(String,  nullable=True)
+    verdict_categories   = Column(Text,    nullable=True)  # JSON list
+    gsb_match            = Column(Boolean, nullable=True)
+    redirect_count       = Column(Integer, nullable=True)
     # VirusTotal enrichment
     vt_domain_malicious  = Column(Float,  nullable=True)
     vt_domain_total      = Column(Float,  nullable=True)
+    vt_domain_reputation = Column(Float,  nullable=True)
+    vt_domain_categories = Column(Text,   nullable=True)  # JSON dict
+    vt_domain_registrar  = Column(String, nullable=True)
+    vt_domain_creation_date = Column(String, nullable=True)
     vt_ip_malicious      = Column(Float,  nullable=True)
     vt_ip_total          = Column(Float,  nullable=True)
+    vt_ip_country        = Column(String, nullable=True)
+    vt_ip_asn            = Column(String, nullable=True)
     vt_url_malicious     = Column(Float,  nullable=True)
     vt_url_total         = Column(Float,  nullable=True)
+    vt_url_threat_names  = Column(Text,   nullable=True)  # JSON list
     vt_raw               = Column(Text,   nullable=True)   # full JSON blob from VT
+    # RDAP enrichment
+    rdap_registered_at   = Column(String,  nullable=True)
+    rdap_expires_at      = Column(String,  nullable=True)
+    rdap_registrar       = Column(String,  nullable=True)
+    rdap_domain_age_days = Column(Integer, nullable=True)
+    rdap_status          = Column(Text,    nullable=True)  # JSON list
 
 
 Base.metadata.create_all(bind=engine)
+
+# ── Schema migration: add new columns to existing DB ──────────────────────────
+_NEW_COLUMNS = [
+    ("page_title",              "TEXT"),
+    ("page_country",            "TEXT"),
+    ("page_asn",                "TEXT"),
+    ("page_asnname",            "TEXT"),
+    ("page_status",             "INTEGER"),
+    ("page_redirected",         "BOOLEAN"),
+    ("tls_issuer",              "TEXT"),
+    ("verdict_categories",      "TEXT"),
+    ("gsb_match",               "BOOLEAN"),
+    ("redirect_count",          "INTEGER"),
+    ("vt_domain_reputation",    "REAL"),
+    ("vt_domain_categories",    "TEXT"),
+    ("vt_domain_registrar",     "TEXT"),
+    ("vt_domain_creation_date", "TEXT"),
+    ("vt_ip_country",           "TEXT"),
+    ("vt_ip_asn",               "TEXT"),
+    ("vt_url_threat_names",     "TEXT"),
+    ("rdap_registered_at",      "TEXT"),
+    ("rdap_expires_at",         "TEXT"),
+    ("rdap_registrar",          "TEXT"),
+    ("rdap_domain_age_days",    "INTEGER"),
+    ("rdap_status",             "TEXT"),
+]
+with engine.connect() as _conn:
+    for _col, _type in _NEW_COLUMNS:
+        try:
+            _conn.execute(
+                __import__("sqlalchemy").text(f"ALTER TABLE scans ADD COLUMN {_col} {_type}")
+            )
+        except Exception:
+            pass  # column already exists
 
 
 # ── URL Sanitization (heuristic + Claude hybrid) ──────────────────────────────
@@ -82,12 +140,56 @@ def _looks_hex(s: str) -> bool:
 def _looks_base64(s: str) -> bool:
     if len(s) < 12:
         return False
-    try:
-        padded = s + '=' * (-len(s) % 4)
-        decoded = base64.b64decode(padded).decode('utf-8', errors='strict')
-        return len(decoded) >= 8 and re.search(r'[a-zA-Z0-9]', decoded) is not None
-    except Exception:
-        return False
+    return _decode_base64_blob(s) is not None
+
+
+def _decode_base64_blob(s: str) -> Optional[bytes]:
+    padded = s + '=' * (-len(s) % 4)
+    decoders = (base64.b64decode, base64.urlsafe_b64decode)
+    for decoder in decoders:
+        try:
+            decoded = decoder(padded)
+            if len(decoded) >= 8:
+                return decoded
+        except Exception:
+            continue
+    return None
+
+
+def _token_char_ratio(value: str, pattern: str) -> float:
+    if not value:
+        return 0.0
+    matches = re.findall(pattern, value)
+    total = sum(len(m) for m in matches)
+    return total / len(value)
+
+
+def _review_reason(value: str) -> str:
+    if _decode_base64_blob(value):
+        return "Encoded token-like value detected"
+    if len(value) >= 24 and _token_char_ratio(value, r"[A-Za-z0-9_-]") >= 0.9:
+        return "Long opaque token detected"
+    if re.fullmatch(r"[0-9.]{7,}", value):
+        return "IP-like or numeric identifier"
+    return "Parameter purpose is unclear"
+
+
+def _is_functional_key(key: str) -> bool:
+    return key.lower() in {
+        "page", "p", "lang", "locale", "view", "tab", "sort", "order",
+        "q", "query", "search", "filter", "category", "id", "slug",
+        "file", "download", "redirect", "target", "dest",
+    }
+
+
+def _recommended_review_action(key: str, value: str) -> str:
+    if _decode_base64_blob(value):
+        return "strip"
+    if len(value) >= 24 and _token_char_ratio(value, r"[A-Za-z0-9_-]") >= 0.9 and not _is_functional_key(key):
+        return "strip"
+    if _is_functional_key(key):
+        return "keep"
+    return "review"
 
 
 def _heuristic_classify(key: str, value: str) -> str:
@@ -130,9 +232,11 @@ def _heuristic_classify(key: str, value: str) -> str:
 
 
 async def _claude_classify(url: str, ambiguous: dict) -> dict:
-    """Ask Claude to classify ambiguous params. Returns {key: 'strip'|'keep'}."""
-    if not ANTHROPIC_KEY or not ambiguous:
-        return {k: 'keep' for k in ambiguous}
+    """Ask Claude to classify ambiguous params."""
+    if not ambiguous:
+        return {"status": "skipped", "decisions": {}, "error": None}
+    if not ANTHROPIC_KEY:
+        return {"status": "unavailable", "decisions": {}, "error": "ANTHROPIC_API_KEY is not configured"}
 
     param_lines = '\n'.join(f'  "{k}": "{v}"' for k, v in ambiguous.items())
     prompt = (
@@ -167,13 +271,64 @@ async def _claude_classify(url: str, ambiguous: dict) -> dict:
             text = resp.json()["content"][0]["text"].strip()
             text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text, flags=re.MULTILINE).strip()
             result = json.loads(text)
-            return {k: result.get(k, 'keep') for k in ambiguous}
-    except Exception:
-        pass
-    return {k: 'keep' for k in ambiguous}
+            return {
+                "status": "ok",
+                "decisions": {k: result.get(k, 'keep') for k in ambiguous},
+                "error": None,
+            }
+        return {
+            "status": "error",
+            "decisions": {},
+            "error": f"Claude returned HTTP {resp.status_code}",
+        }
+    except Exception as exc:
+        return {"status": "error", "decisions": {}, "error": f"{type(exc).__name__}: {exc}"}
 
 
-async def sanitize_url(url: str) -> tuple[str, bool, dict]:
+def _build_sanitization_details(
+    method: str,
+    original_url: str,
+    sanitized_url: str,
+    strip_params: Dict[str, List[str]],
+    keep_params: Dict[str, List[str]],
+    review_params: Dict[str, Dict[str, Any]],
+    errors: List[str],
+) -> Dict[str, Any]:
+    decisions: Dict[str, Dict[str, Any]] = {}
+    for key, values in strip_params.items():
+        decisions[key] = {"action": "strip", "value": values[0] if values else "", "source": method}
+    for key, values in keep_params.items():
+        decisions[key] = {"action": "keep", "value": values[0] if values else "", "source": method}
+    for key, info in review_params.items():
+        decisions[key] = info
+
+    return {
+        "method": method,
+        "original_url": original_url,
+        "sanitized_url": sanitized_url,
+        "stripped": list(strip_params.keys()),
+        "kept": list(keep_params.keys()),
+        "review": [
+            {
+                "key": key,
+                "value": info.get("value", ""),
+                "reason": info.get("reason", "Parameter purpose is unclear"),
+                "recommended_action": info.get("recommended_action", "review"),
+                "source": info.get("source", "review"),
+            }
+            for key, info in review_params.items()
+        ],
+        "errors": errors,
+        "requires_review": bool(review_params),
+        "decisions": decisions,
+    }
+
+
+async def sanitize_url(
+    url: str,
+    manual_keep_params: Optional[List[str]] = None,
+    manual_strip_params: Optional[List[str]] = None,
+) -> tuple[str, bool, dict]:
     """
     Strip tracking params before submission.
     Handles both standard query strings (?k=v) and fragment-based query
@@ -205,13 +360,27 @@ async def sanitize_url(url: str) -> tuple[str, bool, dict]:
             return url, False, {}
 
         params = parse_qs(raw_query, keep_blank_values=True)
+        manual_keep = {p.lower() for p in (manual_keep_params or [])}
+        manual_strip = {p.lower() for p in (manual_strip_params or [])}
+        if manual_keep & manual_strip:
+            conflict = ", ".join(sorted(manual_keep & manual_strip))
+            raise ValueError(f"Conflicting manual decisions for: {conflict}")
 
         strip_params: dict = {}
         keep_params:  dict = {}
         ambiguous:    dict = {}
+        review_params: dict = {}
+        errors: List[str] = []
 
         for key, values in params.items():
             val = values[0] if values else ''
+            lower_key = key.lower()
+            if lower_key in manual_strip:
+                strip_params[key] = values
+                continue
+            if lower_key in manual_keep:
+                keep_params[key] = values
+                continue
             cls = _heuristic_classify(key, val)
             if cls == 'strip':
                 strip_params[key] = values
@@ -225,14 +394,24 @@ async def sanitize_url(url: str) -> tuple[str, bool, dict]:
         if ambiguous:
             method = 'hybrid'
             claude_result = await _claude_classify(url, ambiguous)
-            for key, decision in claude_result.items():
-                if decision == 'strip':
-                    strip_params[key] = params[key]
-                else:
-                    keep_params[key] = params[key]
-
-        if not strip_params:
-            return url, False, {}
+            if claude_result["status"] == "ok":
+                for key, decision in claude_result["decisions"].items():
+                    if decision == 'strip':
+                        strip_params[key] = params[key]
+                    else:
+                        keep_params[key] = params[key]
+            else:
+                if claude_result.get("error"):
+                    errors.append(claude_result["error"])
+                method = 'manual_review'
+                for key, val in ambiguous.items():
+                    review_params[key] = {
+                        "action": "review",
+                        "value": val,
+                        "reason": _review_reason(val),
+                        "recommended_action": _recommended_review_action(key, val),
+                        "source": claude_result["status"],
+                    }
 
         new_query = urlencode(keep_params, doseq=True)
 
@@ -242,16 +421,31 @@ async def sanitize_url(url: str) -> tuple[str, bool, dict]:
             sanitized = urlunparse(parsed._replace(fragment=new_fragment))
         else:
             sanitized = urlunparse(parsed._replace(query=new_query))
-        details    = {
-            'stripped': list(strip_params.keys()),
-            'kept':     list(keep_params.keys()),
-            'method':   method,
-        }
-        return sanitized, True, details
+        details = _build_sanitization_details(
+            method=method,
+            original_url=url,
+            sanitized_url=sanitized,
+            strip_params=strip_params,
+            keep_params=keep_params,
+            review_params=review_params,
+            errors=errors,
+        )
+        return sanitized, bool(strip_params), details
 
-    except Exception:
-        return url, False, {}
-def compute_verdict(result: dict, vt_data: Optional[dict] = None):
+    except Exception as exc:
+        details = {
+            "method": "manual_review",
+            "original_url": url,
+            "sanitized_url": url,
+            "stripped": [],
+            "kept": [],
+            "review": [],
+            "errors": [f"{type(exc).__name__}: {exc}"],
+            "requires_review": True,
+            "decisions": {},
+        }
+        return url, False, details
+def compute_verdict(result: dict, vt_data: Optional[dict] = None, rdap_data: Optional[dict] = None):
     """
     Scoring rubric (max 100):
       urlscan signals:
@@ -266,6 +460,10 @@ def compute_verdict(result: dict, vt_data: Optional[dict] = None):
         +20  VT IP flagged ≥3 engines
         +10  VT IP flagged 1–2 engines
         +15  VT URL flagged (any engine)
+      RDAP signals:
+        +25  domain registered <7 days ago
+        +15  domain registered 7–30 days ago
+        +10  domain registered 30–90 days ago
     Label: malicious ≥60 | suspicious 30–59 | safe <30
     """
     score    = 0.0
@@ -307,6 +505,13 @@ def compute_verdict(result: dict, vt_data: Optional[dict] = None):
         elif ip_mal >= 1:     score += 10
         if url_mal >= 1:      score += 15
 
+    if rdap_data:
+        age = rdap_data.get("domain_age_days")
+        if age is not None:
+            if age < 7:    score += 25
+            elif age < 30: score += 15
+            elif age < 90: score += 10
+
     score = min(score, 100)
     label = "malicious" if score >= 60 else "suspicious" if score >= 30 else "safe"
     return round(score, 1), label
@@ -320,8 +525,8 @@ def fmt_dt(dt):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 
 
-def _write_result_to_db(uuid: str, data: dict, vt_data: Optional[dict] = None):
-    score, label = compute_verdict(data, vt_data)
+def _write_result_to_db(uuid: str, data: dict, vt_data: Optional[dict] = None, rdap_data: Optional[dict] = None):
+    score, label = compute_verdict(data, vt_data, rdap_data)
     page = data.get("page", {})
     db   = SessionLocal()
     rec  = db.query(ScanRecord).filter(ScanRecord.uuid == uuid).first()
@@ -334,16 +539,56 @@ def _write_result_to_db(uuid: str, data: dict, vt_data: Optional[dict] = None):
         rec.raw_result     = json.dumps(data)
         rec.page_domain    = page.get("domain", "")
         rec.page_ip        = page.get("ip", "")
+        # URLScan parsed fields
+        rec.page_title     = page.get("title")
+        rec.page_country   = page.get("country")
+        rec.page_asn       = page.get("asn")
+        rec.page_asnname   = page.get("asnname")
+        rec.page_status    = page.get("status")
+        rec.page_redirected = bool(page.get("redirected"))
+        certs = data.get("lists", {}).get("certificates", [])
+        rec.tls_issuer     = certs[0].get("issuer") if certs else None
+        engine_verdicts    = data.get("verdicts", {}).get("engines", {})
+        categories         = engine_verdicts.get("categories", [])
+        rec.verdict_categories = json.dumps(categories) if categories else None
+        gsb_matches        = data.get("meta", {}).get("processors", {}).get("gsb", {}).get("data", {}).get("matches", [])
+        rec.gsb_match      = bool(gsb_matches)
+        rec.redirect_count = data.get("stats", {}).get("redirects")
         if vt_data:
-            rec.vt_domain_malicious = vt_data.get("domain", {}).get("malicious")
-            rec.vt_domain_total     = vt_data.get("domain", {}).get("total")
-            rec.vt_ip_malicious     = vt_data.get("ip",     {}).get("malicious")
-            rec.vt_ip_total         = vt_data.get("ip",     {}).get("total")
+            domain_vt = vt_data.get("domain", {})
+            rec.vt_domain_malicious     = domain_vt.get("malicious")
+            rec.vt_domain_total         = domain_vt.get("total")
+            rec.vt_domain_reputation    = domain_vt.get("reputation")
+            cats = domain_vt.get("categories")
+            rec.vt_domain_categories    = json.dumps(cats) if cats else None
+            rec.vt_domain_registrar     = domain_vt.get("registrar")
+            rec.vt_domain_creation_date = domain_vt.get("creation_date")
+            ip_vt = vt_data.get("ip", {})
+            rec.vt_ip_malicious         = ip_vt.get("malicious")
+            rec.vt_ip_total             = ip_vt.get("total")
+            rec.vt_ip_country           = ip_vt.get("country")
+            rec.vt_ip_asn               = str(ip_vt.get("asn")) if ip_vt.get("asn") is not None else None
             url_results = vt_data.get("urls", [])
             if url_results:
-                rec.vt_url_malicious = url_results[0].get("malicious")
-                rec.vt_url_total     = url_results[0].get("total")
+                rec.vt_url_malicious    = url_results[0].get("malicious")
+                rec.vt_url_total        = url_results[0].get("total")
+                threat_names            = url_results[0].get("threat_names", [])
+                rec.vt_url_threat_names = json.dumps(threat_names) if threat_names else None
             rec.vt_raw = json.dumps(vt_data)
+        if rdap_data:
+            rec.rdap_registered_at   = rdap_data.get("registered_at")
+            rec.rdap_expires_at      = rdap_data.get("expires_at")
+            rec.rdap_registrar       = rdap_data.get("registrar")
+            rec.rdap_domain_age_days = rdap_data.get("domain_age_days")
+            status = rdap_data.get("status", [])
+            rec.rdap_status          = json.dumps(status) if status else None
+        # Fallback: compute domain age from VT creation date if RDAP returned nothing
+        if rec.rdap_domain_age_days is None and rec.vt_domain_creation_date:
+            try:
+                vt_dt = datetime.fromisoformat(rec.vt_domain_creation_date.replace("Z", "+00:00"))
+                rec.rdap_domain_age_days = (datetime.now(timezone.utc) - vt_dt).days
+            except Exception:
+                pass
     db.commit()
     db.close()
     return score, label
@@ -364,8 +609,11 @@ async def fetch_existing(uuid: str, delay: float = 0):
                 page    = data.get("page", {})
                 domain  = page.get("domain", "")
                 ip      = page.get("ip", "")
-                vt_data = await run_vt_enrichment(domain, ip, [page.get("url", "")]) if VT_API_KEY else None
-                _write_result_to_db(uuid, data, vt_data)
+                vt_task   = asyncio.create_task(run_vt_enrichment(domain, ip, [page.get("url", "")])) if VT_API_KEY else None
+                rdap_task = asyncio.create_task(_rdap_lookup_domain(domain))
+                vt_data   = await vt_task if vt_task else None
+                rdap_data = await rdap_task
+                _write_result_to_db(uuid, data, vt_data, rdap_data)
                 return True
             if resp.status_code == 404:
                 await asyncio.sleep(5)
@@ -401,8 +649,11 @@ async def poll_one(uuid: str):
                 page    = data.get("page", {})
                 domain  = page.get("domain", "")
                 ip      = page.get("ip", "")
-                vt_data = await run_vt_enrichment(domain, ip, [page.get("url", "")]) if VT_API_KEY else None
-                _write_result_to_db(uuid, data, vt_data)
+                vt_task   = asyncio.create_task(run_vt_enrichment(domain, ip, [page.get("url", "")])) if VT_API_KEY else None
+                rdap_task = asyncio.create_task(_rdap_lookup_domain(domain))
+                vt_data   = await vt_task if vt_task else None
+                rdap_data = await rdap_task
+                _write_result_to_db(uuid, data, vt_data, rdap_data)
                 return
             if resp.status_code == 410:
                 db = SessionLocal()
@@ -429,8 +680,10 @@ async def poll_one(uuid: str):
 
 # ── Models ────────────────────────────────────────────────────────────────────
 class SubmitRequest(BaseModel):
-    url:        str
-    visibility: str = "public"
+    url:                 str
+    visibility:          str = "public"
+    manual_keep_params:  List[str] = Field(default_factory=list)
+    manual_strip_params: List[str] = Field(default_factory=list)
 
 class BulkSubmitRequest(BaseModel):
     urls:       List[str]
@@ -453,7 +706,21 @@ async def submit_scan(req: SubmitRequest, background_tasks: BackgroundTasks):
         raise HTTPException(500, "URLSCAN_API_KEY not set in .env")
 
     # ── Sanitize before submission ────────────────────────────────────────────
-    clean_url, was_sanitized, san_details = await sanitize_url(req.url.strip())
+    clean_url, was_sanitized, san_details = await sanitize_url(
+        req.url.strip(),
+        manual_keep_params=req.manual_keep_params,
+        manual_strip_params=req.manual_strip_params,
+    )
+    if san_details.get("requires_review"):
+        return {
+            "status": "review_required",
+            "uuid": None,
+            "url": clean_url,
+            "sanitized": was_sanitized,
+            "original_url": req.url.strip(),
+            "result_url": None,
+            "sanitization_details": san_details,
+        }
 
     headers = {"API-Key": API_KEY, "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=15) as client:
@@ -507,9 +774,10 @@ async def bulk_scan(req: BulkSubmitRequest, background_tasks: BackgroundTasks):
             results.append({
                 "url":       r["url"],
                 "uuid":      r["uuid"],
-                "status":    "pending",
+                "status":    r["status"],
                 "sanitized": r.get("sanitized", False),
                 "original_url": r.get("original_url"),
+                "sanitization_details": r.get("sanitization_details"),
             })
         except Exception:
             results.append({"url": url, "uuid": None, "status": "failed", "error": "Internal error while submitting scan"})
@@ -539,16 +807,39 @@ async def list_scans():
             "screenshot_url":        r.screenshot_url,
             "page_domain":           r.page_domain,
             "page_ip":               r.page_ip,
+            "page_title":            r.page_title,
+            "page_country":          r.page_country,
+            "page_asn":              r.page_asn,
+            "page_asnname":          r.page_asnname,
+            "page_status":           r.page_status,
+            "page_redirected":       r.page_redirected,
+            "tls_issuer":            r.tls_issuer,
+            "verdict_categories":    json.loads(r.verdict_categories) if r.verdict_categories else None,
+            "gsb_match":             r.gsb_match,
+            "redirect_count":        r.redirect_count,
             "original_url":          r.original_url,
             "sanitization_method":   r.sanitization_method,
             "sanitization_details":  json.loads(r.sanitization_details) if r.sanitization_details else None,
             # VT enrichment
             "vt_domain_malicious":   r.vt_domain_malicious,
             "vt_domain_total":       r.vt_domain_total,
+            "vt_domain_reputation":  r.vt_domain_reputation,
+            "vt_domain_categories":  json.loads(r.vt_domain_categories) if r.vt_domain_categories else None,
+            "vt_domain_registrar":   r.vt_domain_registrar,
+            "vt_domain_creation_date": r.vt_domain_creation_date,
             "vt_ip_malicious":       r.vt_ip_malicious,
             "vt_ip_total":           r.vt_ip_total,
+            "vt_ip_country":         r.vt_ip_country,
+            "vt_ip_asn":             r.vt_ip_asn,
             "vt_url_malicious":      r.vt_url_malicious,
             "vt_url_total":          r.vt_url_total,
+            "vt_url_threat_names":   json.loads(r.vt_url_threat_names) if r.vt_url_threat_names else None,
+            # RDAP enrichment
+            "rdap_registered_at":    r.rdap_registered_at,
+            "rdap_expires_at":       r.rdap_expires_at,
+            "rdap_registrar":        r.rdap_registrar,
+            "rdap_domain_age_days":  r.rdap_domain_age_days,
+            "rdap_status":           json.loads(r.rdap_status) if r.rdap_status else None,
         }
         for r in records
     ]
@@ -659,6 +950,66 @@ async def save_search_results(req: SaveSearchRequest, background_tasks: Backgrou
     return {"saved": saved, "skipped": skipped, "total": len(req.results)}
 
 
+# ── RDAP helper ───────────────────────────────────────────────────────────────
+
+async def _rdap_lookup_domain(domain: str) -> dict:
+    if not domain:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            r = await client.get(f"https://rdap.org/domain/{domain}",
+                                 headers={"Accept": "application/json"})
+        if r.status_code != 200:
+            return {}
+        data = r.json()
+
+        # Extract registration and expiration dates from events array
+        events: dict[str, str] = {}
+        for event in data.get("events", []):
+            action = event.get("eventAction", "")
+            date   = event.get("eventDate", "")
+            if action and date:
+                events[action] = date
+
+        registered_at = events.get("registration")
+        expires_at    = events.get("expiration")
+
+        # Calculate domain age in days
+        domain_age_days = None
+        if registered_at:
+            try:
+                reg_dt = datetime.fromisoformat(registered_at.replace("Z", "+00:00"))
+                domain_age_days = (datetime.now(timezone.utc) - reg_dt).days
+            except Exception:
+                pass
+
+        # Extract registrar name from entities
+        registrar = None
+        for entity in data.get("entities", []):
+            if "registrar" in entity.get("roles", []):
+                vcard = entity.get("vcardArray", [])
+                # vcardArray is ["vcard", [[type, params, kind, value], ...]]
+                if len(vcard) > 1:
+                    for entry in vcard[1]:
+                        if entry[0] == "fn":
+                            registrar = entry[3]
+                            break
+                if registrar:
+                    break
+
+        status = data.get("status", [])
+
+        return {
+            "registered_at":   registered_at,
+            "expires_at":      expires_at,
+            "registrar":       registrar,
+            "domain_age_days": domain_age_days,
+            "status":          status,
+        }
+    except Exception:
+        return {}
+
+
 # ── VirusTotal helpers ────────────────────────────────────────────────────────
 
 def _vt_headers():
@@ -682,10 +1033,17 @@ async def _vt_lookup_domain(domain: str) -> dict:
         if r.status_code == 200:
             attrs = r.json().get("data", {}).get("attributes", {})
             mal, tot = _vt_score(attrs)
+            creation_ts = attrs.get("creation_date")
+            creation_date = (
+                datetime.fromtimestamp(creation_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                if creation_ts else None
+            )
             return {"malicious": mal, "total": tot,
-                    "reputation": attrs.get("reputation"),
-                    "categories": attrs.get("categories", {}),
-                    "tags":       attrs.get("tags", [])}
+                    "reputation":     attrs.get("reputation"),
+                    "categories":     attrs.get("categories", {}),
+                    "tags":           attrs.get("tags", []),
+                    "registrar":      attrs.get("registrar"),
+                    "creation_date":  creation_date}
         return {"error": f"VT status {r.status_code}"}
     except Exception as e:
         return {"error": str(e)}
@@ -721,8 +1079,9 @@ async def _vt_lookup_url(url: str) -> dict:
             attrs = r.json().get("data", {}).get("attributes", {})
             mal, tot = _vt_score(attrs)
             return {"url": url, "malicious": mal, "total": tot,
-                    "final_url": attrs.get("last_final_url"),
-                    "title":     attrs.get("title")}
+                    "final_url":    attrs.get("last_final_url"),
+                    "title":        attrs.get("title"),
+                    "threat_names": attrs.get("threat_names", [])}
         if r.status_code == 404:
             return {"url": url, "malicious": 0, "total": 0,
                     "note": "Not yet in VT database"}
@@ -796,20 +1155,32 @@ async def vt_enrich(uuid: str):
 
     vt_data = await run_vt_enrichment(domain, ip, [scan_url])
 
-    # Recompute verdict using original urlscan result + fresh VT data
+    # Recompute verdict using original urlscan result + fresh VT data + stored RDAP age
     raw_result = json.loads(rec.raw_result) if rec.raw_result else {}
-    score, label = compute_verdict(raw_result, vt_data)
+    rdap_data  = {"domain_age_days": rec.rdap_domain_age_days} if rec.rdap_domain_age_days is not None else None
+    score, label = compute_verdict(raw_result, vt_data, rdap_data)
 
-    url_results = vt_data.get("urls", [])
     rec.verdict_score       = score
     rec.verdict_label       = label
-    rec.vt_domain_malicious = vt_data.get("domain", {}).get("malicious")
-    rec.vt_domain_total     = vt_data.get("domain", {}).get("total")
-    rec.vt_ip_malicious     = vt_data.get("ip",     {}).get("malicious")
-    rec.vt_ip_total         = vt_data.get("ip",     {}).get("total")
+    domain_vt = vt_data.get("domain", {})
+    rec.vt_domain_malicious     = domain_vt.get("malicious")
+    rec.vt_domain_total         = domain_vt.get("total")
+    rec.vt_domain_reputation    = domain_vt.get("reputation")
+    cats = domain_vt.get("categories")
+    rec.vt_domain_categories    = json.dumps(cats) if cats else None
+    rec.vt_domain_registrar     = domain_vt.get("registrar")
+    rec.vt_domain_creation_date = domain_vt.get("creation_date")
+    ip_vt = vt_data.get("ip", {})
+    rec.vt_ip_malicious         = ip_vt.get("malicious")
+    rec.vt_ip_total             = ip_vt.get("total")
+    rec.vt_ip_country           = ip_vt.get("country")
+    rec.vt_ip_asn               = str(ip_vt.get("asn")) if ip_vt.get("asn") is not None else None
+    url_results = vt_data.get("urls", [])
     if url_results:
-        rec.vt_url_malicious = url_results[0].get("malicious")
-        rec.vt_url_total     = url_results[0].get("total")
+        rec.vt_url_malicious    = url_results[0].get("malicious")
+        rec.vt_url_total        = url_results[0].get("total")
+        threat_names            = url_results[0].get("threat_names", [])
+        rec.vt_url_threat_names = json.dumps(threat_names) if threat_names else None
     rec.vt_raw = json.dumps(vt_data)
     db.commit()
     db.close()
@@ -820,6 +1191,94 @@ async def vt_enrich(uuid: str):
         "verdict_label": label,
         "vt":            vt_data,
     }
+
+
+# ── RDAP Endpoints ────────────────────────────────────────────────────────────
+
+@app.post("/api/rdap/enrich/{uuid}")
+async def rdap_enrich(uuid: str):
+    db  = SessionLocal()
+    rec = db.query(ScanRecord).filter(ScanRecord.uuid == uuid).first()
+    if not rec:
+        db.close()
+        raise HTTPException(404, "Scan not found")
+    if rec.status != "complete":
+        db.close()
+        raise HTTPException(400, f"Scan is '{rec.status}' — enrichment requires a completed scan")
+
+    domain    = rec.page_domain or ""
+    rdap_data = await _rdap_lookup_domain(domain)
+
+    if rdap_data:
+        rec.rdap_registered_at   = rdap_data.get("registered_at")
+        rec.rdap_expires_at      = rdap_data.get("expires_at")
+        rec.rdap_registrar       = rdap_data.get("registrar")
+        rec.rdap_domain_age_days = rdap_data.get("domain_age_days")
+        status = rdap_data.get("status", [])
+        rec.rdap_status          = json.dumps(status) if status else None
+
+        # Recompute verdict with updated RDAP age
+        raw_result   = json.loads(rec.raw_result) if rec.raw_result else {}
+        vt_raw       = json.loads(rec.vt_raw) if rec.vt_raw else None
+        score, label = compute_verdict(raw_result, vt_raw, rdap_data)
+        rec.verdict_score = score
+        rec.verdict_label = label
+
+    db.commit()
+    db.close()
+
+    return {
+        "uuid":              uuid,
+        "domain":            domain,
+        "rdap":              rdap_data,
+        "verdict_score":     rec.verdict_score,
+        "verdict_label":     rec.verdict_label,
+    }
+
+
+async def _rdap_enrich_one(uuid: str, delay: float = 0):
+    """Background helper for bulk RDAP backfill."""
+    if delay:
+        await asyncio.sleep(delay)
+    db  = SessionLocal()
+    rec = db.query(ScanRecord).filter(ScanRecord.uuid == uuid).first()
+    if not rec:
+        db.close()
+        return
+    domain    = rec.page_domain or ""
+    rdap_data = await _rdap_lookup_domain(domain)
+    if rdap_data:
+        rec.rdap_registered_at   = rdap_data.get("registered_at")
+        rec.rdap_expires_at      = rdap_data.get("expires_at")
+        rec.rdap_registrar       = rdap_data.get("registrar")
+        rec.rdap_domain_age_days = rdap_data.get("domain_age_days")
+        status = rdap_data.get("status", [])
+        rec.rdap_status          = json.dumps(status) if status else None
+        raw_result   = json.loads(rec.raw_result) if rec.raw_result else {}
+        vt_raw       = json.loads(rec.vt_raw) if rec.vt_raw else None
+        score, label = compute_verdict(raw_result, vt_raw, rdap_data)
+        rec.verdict_score = score
+        rec.verdict_label = label
+    db.commit()
+    db.close()
+
+
+@app.post("/api/rdap/backfill")
+async def rdap_backfill(background_tasks: BackgroundTasks):
+    """Queue RDAP enrichment for all completed records that don't have it yet."""
+    db    = SessionLocal()
+    recs  = db.query(ScanRecord).filter(
+        ScanRecord.status == "complete",
+        ScanRecord.rdap_registered_at == None,
+        ScanRecord.page_domain != None,
+    ).all()
+    uuids = [r.uuid for r in recs]
+    db.close()
+
+    for i, uuid in enumerate(uuids):
+        background_tasks.add_task(_rdap_enrich_one, uuid, i * 1.0)
+
+    return {"queued": len(uuids), "uuids": uuids}
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
