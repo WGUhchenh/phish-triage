@@ -192,6 +192,13 @@ def _recommended_review_action(key: str, value: str) -> str:
     return "review"
 
 
+def _trim_fragment_to_last_html(fragment: str) -> Optional[str]:
+    idx = fragment.lower().rfind(".html")
+    if idx == -1:
+        return None
+    return fragment[:idx + len(".html")]
+
+
 def _heuristic_classify(key: str, value: str) -> str:
     """Returns 'strip', 'keep', or 'ambiguous'."""
     k = key.lower()
@@ -339,24 +346,44 @@ async def sanitize_url(
     try:
         parsed = urlparse(url)
 
-        # Detect fragment-based query string: url#?param=value or url#param=value
+        # Detect fragment-based query string: url#?param=value, url#param=value,
+        # or route-based fragments like url#/page.html?param=value.
         fragment_query = ""
         fragment_prefix = ""
+        fragment_route = None
         if parsed.fragment:
             frag = parsed.fragment
             if frag.startswith("?"):
                 fragment_query  = frag[1:]   # strip leading ?
                 fragment_prefix = "?"
+            elif "?" in frag:
+                route_part, query_part = frag.split("?", 1)
+                fragment_route = _trim_fragment_to_last_html(route_part) or route_part
+                fragment_query = query_part
             elif "=" in frag and not frag.startswith("/"):
                 # bare fragment query string without leading ?
                 fragment_query  = frag
                 fragment_prefix = ""
+            else:
+                fragment_route = _trim_fragment_to_last_html(frag)
 
         # Decide which query string to sanitize
         using_fragment = bool(fragment_query)
         raw_query = fragment_query if using_fragment else parsed.query
 
         if not raw_query:
+            if fragment_route and fragment_route != parsed.fragment:
+                sanitized = urlunparse(parsed._replace(fragment=fragment_route))
+                details = _build_sanitization_details(
+                    method="heuristic",
+                    original_url=url,
+                    sanitized_url=sanitized,
+                    strip_params={},
+                    keep_params={},
+                    review_params={},
+                    errors=[],
+                )
+                return sanitized, True, details
             return url, False, {}
 
         params = parse_qs(raw_query, keep_blank_values=True)
@@ -416,8 +443,11 @@ async def sanitize_url(
         new_query = urlencode(keep_params, doseq=True)
 
         if using_fragment:
-            # Rebuild fragment: restore prefix + remaining params
-            new_fragment = (fragment_prefix + new_query) if new_query else ""
+            # Rebuild fragment: restore route/prefix + remaining params
+            if fragment_route is not None:
+                new_fragment = f"{fragment_route}?{new_query}" if new_query else fragment_route
+            else:
+                new_fragment = (fragment_prefix + new_query) if new_query else ""
             sanitized = urlunparse(parsed._replace(fragment=new_fragment))
         else:
             sanitized = urlunparse(parsed._replace(query=new_query))
@@ -430,7 +460,7 @@ async def sanitize_url(
             review_params=review_params,
             errors=errors,
         )
-        return sanitized, bool(strip_params), details
+        return sanitized, sanitized != url, details
 
     except Exception as exc:
         details = {
