@@ -1,16 +1,17 @@
 # 🛡 PhishTriage
 
-A self-hosted phishing URL triage tool powered by **URLScan.io**, **VirusTotal**, and **Claude AI**.  
-Built for security analysts who need fast, automated verdicts on suspicious URLs — with full enrichment and a clean browser-based UI.
+A self-hosted phishing investigation and URL triage tool powered by **URLScan.io**, **VirusTotal**, and **Claude AI**.  
+Built for security analysts who need fast verdicts, privacy-preserving URL sanitization, and a workflow that can evolve into a richer investigation surface with multi-source threat intelligence and takedown support.
 
 ---
 
 ## Features
 
 - **Single & Bulk URL Submission** — Submit one URL or paste a list for batch scanning via URLScan.io
-- **Live Queue & Results Database** — Track pending scans and browse completed verdicts in real time
+- **Live Investigation Records** — Track pending scans and browse completed verdicts in real time
 - **VirusTotal Enrichment** — Cross-reference domain, IP, and URL reputation from 70+ AV engines
-- **AI-Powered URL Sanitization** — Uses Claude to strip tracking/PII parameters before submission, protecting analyst privacy
+- **AI-Powered URL Sanitization** — Uses Claude plus local heuristics to strip tracking/PII parameters before submission, protecting analyst privacy
+- **Fragment-Aware Sanitization** — Handles route-based fragment URLs such as `#/page.html?token=...` before scanning
 - **URLScan Search** — Query historical URLScan.io results and import them into your local database
 - **Verdict Scoring** — Automatic `malicious / suspicious / low / safe` classification using combined URLScan + VT signals
 
@@ -91,6 +92,7 @@ phish-triage/
 ## Security Notes
 
 - URLs are sanitized before submission to remove tracking parameters and encoded PII
+- Route-based fragment URLs are normalized before submission when tracking tokens are embedded after `#`
 - The app is intended for **local or internal use only** — it is not hardened for public deployment
 - API keys are loaded from environment variables and never exposed to the frontend
 
@@ -98,11 +100,16 @@ phish-triage/
 
 ## Roadmap / Future Improvements
 
-- [ ] Export scan results to CSV / JSON
-- [ ] Email alert on high-confidence malicious verdict
-- [ ] Docker / `docker-compose` support for easy deployment
-- [ ] Role-based access control for team use
-- [ ] Webhook support for SIEM/SOAR integration
+- [ ] Merge Queue and Database into a single `Investigations` workspace
+- [ ] Replace Search and VT Lookup with a unified `Investigate` workflow
+- [ ] Add AlphaMountain as a second threat intelligence source
+- [ ] Make VT and future AlphaMountain data more actionable for analysts
+- [ ] Add Google Cloud Storage takedown draft generation for `storage.googleapis.com` abuse
+- [ ] Add analyst notes, IOC copy/export, and related-indicator pivots
+- [ ] Add a tracked takedown queue and action workflow
+- [ ] Continue improving deployment ergonomics, exports, and integrations
+
+For the detailed product and engineering roadmap, see [PROJECT_PLAN.md](PROJECT_PLAN.md).
 
 ---
 
